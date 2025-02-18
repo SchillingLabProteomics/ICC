@@ -1,6 +1,5 @@
-# ICC
-Proteomic cohort of human Intrahepatic Cholangiocarcinoma (ICC) samples and patient-derived xenografts
+# Analysis pipeline for the manuscript "Proteomic Characterization of Intrahepatic Cholangiocarcinoma Identifies Risk-Stratifying Subgroups, Proteins Associated with Time-To-Recurrence, and mTOR Effector Molecule EIF4A1 as a Druggable Therapeutic Target"
 
-To recreate our analyses you can download the DIA-NN output files at ... and add them to the data folder. 
+This manuscript is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. This cohort was analyzed in DIA-NN 1.7 twice: once with a fully tryptic database and once with a semi-specific database to study potential proteolytic events. Additionally, we also analyzed 9 patient-derived ICC xenografts (PDX) with DIA-NN. To recreate our analyses you can download all DIA-NN output files at ..., add them to the data folder, and start the analysis with script 1. You can also use the provided expression matrices in the data folder and directly start statistical analysis with script 2.
 
-All scripts are numbered accoriding to the steps in the project / manuscript they analyze. 
+All scripts are numbered accoriding to the steps in the project / manuscript they cover. 
