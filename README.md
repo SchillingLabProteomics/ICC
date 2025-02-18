@@ -1,6 +1,6 @@
 # Intrahepatic Cholangiocarcinoma (ICC) Proteomics Analysis Pipeline
 
-### Overview
+## Overview
 
 This repository contains the analysis pipeline for the manuscript:
 
@@ -8,11 +8,11 @@ This repository contains the analysis pipeline for the manuscript:
 
 The study is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. The cohort was analyzed using DIA-NN 1.7 with a fully tryptic database, and a semi-specific database to study proteolytic events. Additionally, we analyzed 9 patient-derived ICC xenografts (PDX).
 
-### How to Use the Code
+## How to Use the Code
 
 The scripts are numbered to correspond to the main steps in the analysis pipeline described in the manuscript.
 
-#### 1. Data Preparation & Batch Correction
+### 1. Data Preparation & Batch Correction
 
 1_humancohort_LoadData&BatchCorrection.R
 
