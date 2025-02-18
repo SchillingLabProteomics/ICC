@@ -12,7 +12,7 @@ The study is based on proteomic data from a human cohort of intrahepatic cholang
 
 The scripts are numbered to correspond to the main steps in the analysis pipeline described in the manuscript.
 
-##### 1. Data Preparation & Batch Correction
+#### 1. Data Preparation & Batch Correction
 
 1_humancohort_LoadData&BatchCorrection.R
 
