@@ -14,15 +14,12 @@ The scripts are numbered to correspond to the main steps in the analysis pipelin
 
 ### 1. Data Preparation & Batch Correction
 
-1_humancohort_LoadData&BatchCorrection.R
+  1_humancohort_LoadData&BatchCorrection.R
 
-Loads DIA-NN output.
+  Loads DIA-NN output and performs batch correction.
+  Outputs expression matrices for further analysis.
 
-Performs batch correction using ComBat.
-
-Outputs expression matrices for further analysis.
-
-2. Unsupervised Analysis of Human Cohort
+### 2. Unsupervised Analysis of Human Cohort
 
 2_humancohort_unsupervisedStats.Rmd
 
