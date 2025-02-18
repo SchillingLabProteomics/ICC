@@ -32,7 +32,6 @@ Generates exploratory plots.
 `3_humancohort_Tumor-TANM.R`
 
 Performs differential expression analysis between tumor and tumor-adjacent non-malignant tissues (TANM) using limma.
-Generates volcano plots and boxplots of key proteins.
 
 ### 4. Unsupervised Analysis of Tumor Samples
 
@@ -69,7 +68,7 @@ PCA-based co-regulation analysis.
 
 ## Input Data
 
-DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder.
+DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of the manuscript.
 
 Expression Matrices: Available in Data/, for users who want to start with statistical analyses directly.
 
