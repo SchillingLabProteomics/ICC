@@ -51,20 +51,20 @@ Volcano plots and Kaplan-Meier survival analysis.
 
 `6_humancohort_CPHM.Rmd`
 
-Cox proportional hazards models (CPHM) to identify proteins associated with time-to-recurrence (TTR).
+Cox proportional hazards models (CPHM) to identify proteins associated with time-to-recurrence.
 
 ### 7. Semi-Specific Analysis
 
 `7_humancohort_semi-specificAnalysis.Rmd`
 
-Analysis of semi-specific peptides indicating potential proteolytic events.
+Analysis of semi-specific peptides including abundance and PLS-DA.
 
 ### 8. Xenograft Analysis
 
 `8_xenografts.Rmd`
 
 Two-species analysis of proteomic data from patient-derived ICC xenografts (PDX).
-Differential expression and clustering analysis.
+PCA-based co-regulation analysis.
 
 
 ## Input Data
