@@ -58,7 +58,7 @@ write.csv(unique.genes, "Data/ICC_humancohort_matrix.tsv")
   {
     if (sum(is.na(input_data)) > 0) {
       # Principal component analysis with missing values:a comparative survey of methods
-      # DOI 10.1007/s11258-014-0406-z
+      # DOI 10.1007/s11258-014-0406-z 
       data <- missMDA::imputePCA(input_data)$completeObs
     } else {
       data <- input_data
@@ -129,7 +129,7 @@ write.csv(unique.genes, "Data/ICC_humancohort_matrix.tsv")
   ############################################
 
   # set max allowed NAs per protein (per batch) (in %) for ComBat -> you need to "titrate" this number -> if the number is above a certain treshold, the script crashes -> find the highest possible NA number
-    expr_data_allow_NAs <- 75
+    expr_data_allow_NAs <- 78
   ############################################
 
   # calculate P.Values and adj.P.Values
