@@ -1,0 +1,283 @@
+---
+title: "Xenografts"
+author: "Frank Hause, Tilman Werner"
+date: '2022-07-20'
+output:
+  pdf_document: default
+  html_document: default
+---
+##### Load packages
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(knitr)
+library(mixOmics)
+library(ggplot2)
+library(tinytex)
+library(devtools)
+library(diann)
+`%notin%` <- Negate(`%in%`)
+```
+
+```{r}
+#load data
+dataraw <- diann_load("Data/ICC_xenografts_DIA-NNoutput.tsv")
+
+#remove filepath from File.Name
+dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".*\\\\", ""))
+dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".raw.mzml$", ""))
+
+#extract MQ-LFQ data from file - Genes.MQLFQ is already normalized via DIA-NN!
+  
+precursors <- diann_matrix(dataraw, pg.q = 0.01)
+unique.genes <- diann_matrix(dataraw, id.header="Protein.Ids", 
+                             quantity.header="Genes.MaxLFQ.Unique", proteotypic.only = T, pg.q = 0.01)
+write.csv(unique.genes, "Data/ICC_xenografts_matrix.csv")
+
+```
+
+# Separate data
+```{r}
+# Load all xeno data
+all_prots_xenos_df <- read.csv(file = "Data/ICC_xenografts_matrix.csv", sep = ",") %>%
+  dplyr::select(-c("TW504.raw", "TW505.raw", "TW506.raw"))
+rownames(all_prots_xenos_df) <- all_prots_xenos_df$X
+all_prots_xenos_df <- all_prots_xenos_df[-1]
+
+# Load human data only
+human_prots_xenos_df <- read.csv(file = "Data/ICC_xenografts_matrix_humanproteins.tsv", sep = ",") %>%
+  dplyr::select(-c("TW504", "TW505", "TW506"))# This file only contains human UNIPROT IDs
+rownames(human_prots_xenos_df) <- human_prots_xenos_df$X
+human_prots_xenos_df <- human_prots_xenos_df[-1]
+
+# Intersect all and murine data to identify murine proteins
+human_prots_vec <- intersect(rownames(all_prots_xenos_df), rownames(human_prots_xenos_df))
+
+# Define that all proteins in all data, which are not murine are human
+human_prots_xenos_df <- all_prots_xenos_df[rownames(all_prots_xenos_df) %in% human_prots_vec, ] 
+murine_prots_xenos_df <- all_prots_xenos_df[!(rownames(all_prots_xenos_df) %in% human_prots_vec), ] 
+
+# log2() trafo
+human_prots_xenos_df <- log2(human_prots_xenos_df)
+murine_prots_xenos_df <- log2(murine_prots_xenos_df)
+
+# Save files
+write.csv(human_prots_xenos_df, file = "results/Tilmans Xenografts_human proteins only_log2.csv")
+write.csv(murine_prots_xenos_df, file = "results/Tilmans Xenografts_murine proteins only_log2.csv")
+```
+
+# Identified proteins
+```{r}
+countsmouse <- colSums(!is.na(murine_prots_xenos_df))%>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample") %>%
+  rename(Count = ".")
+
+countshuman <- colSums(!is.na(human_prots_xenos_df))%>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample") %>%
+  rename(Count = ".")
+
+paste("average protein IDs mouse = ", mean(countsmouse$Count))
+paste("average protein IDs human = ", mean(countshuman$Count))
+
+humanprots <- pivot_longer(human_prots_xenos_df, cols = contains("TW"), names_to = "Sample", values_to = "Abundance") %>%
+  mutate(Organism = "human")
+murineprots <- pivot_longer(murine_prots_xenos_df, cols = contains("TW"), names_to = "Sample", values_to = "Abundance") %>%
+  mutate(Organism = "murine")
+all <- bind_rows(humanprots, murineprots) %>%
+  filter(!is.na(Abundance)) %>%
+  left_join(countsmouse, by = "Sample")
+all$Sample <- str_remove_all(all$Sample, ".raw")
+
+ggplot(all, aes(x = reorder(Sample, Count), fill = Organism)) +
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90), legend.position = "none") +
+  scale_fill_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  xlab("Samples") +
+  ylab("Count Identified Proteins")
+```
+
+# Load files
+
+### Load tumor data
+
+##### Load and transpose tumor expression matrix
+```{r}
+expr_tumor <- human_prots_xenos_df %>%
+  t()
+```
+
+### Load Stroma data
+```{r}
+expr_stroma <- murine_prots_xenos_df %>%
+  t()
+```
+
+# Begin mixOmics
+```{r}
+number <- 200
+MyResult.spls <- spls(expr_tumor, expr_stroma, keepX = c(number, number), keepY = c(number, number), scale = TRUE, mode = "regression", ncomp = 2) 
+plotIndiv(MyResult.spls, #legend = TRUE,
+          #legend.title = 'Genotype',
+          ind.names = rownames(expr_stroma))     ## sample plot 
+png(file="results/_TW_Xenos_tumor vs stroma_mixOmics_PLS_CircleCorrPlot_150.png", width=1200, height=9600)
+plotVar(MyResult.spls, cex = c(5,5), legend = c("human", "murine"), var.names = FALSE, style = "ggplot2")#, cutoff = 0.7)   +
+## variable plot
+dev.off()
+
+# Get correlation coefficients
+coordinates <- plotVar(MyResult.spls, cex = c(2.5,2.5), legend = TRUE, cutoff = 0.5)       ## variable plot
+coordinates <- coordinates[,-(5:9)]
+colnames(coordinates)[3] <- "Organism"
+coordinates$Organism <- ifelse(coordinates$Organism == "X", "human", "murine")
+
+write.csv(coordinates, file = "results/TW_correlations from PLS.csv")
+
+dev.off()
+
+X11()
+cim(MyResult.spls, comp = 2)
+cim(MyResult.spls, comp = 1, save = 'png', name.save = 'TW_Xenos_tumor vs stroma_mixOmics_PLS_CorrMap_comp1_150')
+cim(MyResult.spls, comp = 2, save = 'png', name.save = 'TW_Xenos_tumor vs stroma_mixOmics_PLS_CorrMap_comp2_150')
+
+X11()
+network(MyResult.spls, comp = 1, cutoff = 0.6, save = 'png', name.save = 'TW_Xenos_tumor vs stroma_mixOmics_PLSnetwork')
+
+png(file="results/TW_Xenos_tumor vs stroma_mixOmics_PLS_Comp1Loadings_150.png", width=2000, height=1000)
+plotLoadings(MyResult.spls, comp = 1, size.name = rel(0.5))
+dev.off()
+png(file="results/TW_Xenos_tumor vs stroma_mixOmics_PLS_Comp2Loadings_150.png", width=2000, height=1000)
+plotLoadings(MyResult.spls, comp = 2, size.name = rel(0.5))
+dev.off()
+```
+
+```{r cars}
+#Visualization of Compounds 
+oridata_org <- coordinates %>%
+  rownames_to_column(var = "UNIPROT")
+
+ggplot(oridata_org, aes(x = x, y = y, color = Organism)) +
+  geom_point(alpha = 0.5, size = 2) +
+  scale_color_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("component 1") +
+  ylab("component 2") +
+  labs(title = "PCA loading components", subtitle = "murine vs. human", caption = paste(nrow(oridata_org)/4, "proteins loaded per component")) +
+  annotate("path",
+   x=0+1*cos(seq(0,2*pi,length.out=100)),
+   y=0+1*sin(seq(0,2*pi,length.out=100))) +
+  annotate("path",
+   x=0+0.5*cos(seq(0,2*pi,length.out=100)),
+   y=0+0.5*sin(seq(0,2*pi,length.out=100))) #https://stackoverflow.com/questions/6862742/draw-a-circle-with-ggplot2
+
+humanproteome <- read_tsv("Data/uniprot-proteome_human.tab") 
+mouseproteome <- read_tsv("Data/uniprot-proteome_mouse.tab") 
+
+proteome <- bind_rows(humanproteome, mouseproteome) %>%
+  dplyr::rename(UNIPROT = "Entry") %>%
+  dplyr::select(-Organism)
+
+left <- filter(oridata_org, x <= -0.5 & (y <= 0.5 & y >= -0.5)) %>%
+  left_join(proteome, by = "UNIPROT")
+write.csv(left, file = "left.csv")
+
+right <- filter(oridata_org, x >= 0.5 & (y <= 0.5 & y >= -0.5)) %>%
+  left_join(proteome, by = "UNIPROT")
+write.csv(right, file = "right.csv")
+
+down <- filter(oridata_org, y <= -0.5 & (x <= 0.5 & x >= -0.5)) %>%
+  left_join(proteome, by = "UNIPROT")
+write.csv(down, file = "down.csv")
+
+up <- filter(oridata_org, y >= 0.5 & (x <= 0.5 & x >= -0.5)) %>%
+  left_join(proteome, by = "UNIPROT")
+write.csv(up, file = "up.csv")
+```
+
+```{r}
+ggplot(oridata_org, aes(x = x, fill = Organism)) +
+  geom_density(alpha = 0.5, show.legend = FALSE) +
+  scale_fill_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  theme_minimal() 
+
+ggplot(oridata_org, aes(x = y, fill = Organism)) +
+  geom_density(alpha = 0.5, show.legend = FALSE) +
+  scale_fill_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  theme_minimal() +
+  scale_x_continuous(position = "top") +
+  scale_y_reverse(position = "right") +
+  coord_flip()
+```
+
+```{r}
+boxhumo2 <- filter(oridata_org, x >= -0.5 & x <= 0.5) %>%
+  dplyr::rename(Protein = "UNIPROT")
+
+data <- all_prots_xenos_df %>%
+  rownames_to_column(var = "Protein")
+
+boxhumo <- filter(oridata_org, y >= -0.5 & y <= 0.5) %>%
+  dplyr::rename(Protein = "UNIPROT")
+
+databox <- filter(data, Protein %in% boxhumo$Protein) %>%
+  left_join(boxhumo, by = "Protein") %>%
+  pivot_longer(cols = contains("TW"), names_to = "Sample", values_to = "Abundance")
+databox$Abundance <- log2(databox$Abundance)
+
+mediandatamur <- pivot_wider(dplyr::select(databox,"Protein", "Organism", "Sample", "Abundance"), names_from = "Sample", values_from = "Abundance") %>%
+  filter(Organism == "murine")
+
+medians <- apply(dplyr::select(mediandatamur, contains("TW")), 2, median, na.rm = TRUE) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample") %>%
+  dplyr::rename(Median = ".")
+
+databox <- left_join(databox, medians, by = "Sample") 
+
+# reorder according to median abundance
+
+ggplot(databox, aes(x = reorder(Sample, -Median), y = Abundance, fill = Organism)) +
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(fill = "Organism") +
+  scale_fill_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  xlab("Samples") +
+  ylab("log2 LFQ Intensity")
+
+databox2 <- filter(data, Protein %in% boxhumo2$Protein) %>%
+  left_join(boxhumo2, by = "Protein") %>%
+  pivot_longer(cols = contains("TW"), names_to = "Sample", values_to = "Abundance")
+databox2$Abundance <- log2(databox2$Abundance)
+
+mediandatamur2 <- pivot_wider(dplyr::select(databox2,"Protein", "Organism", "Sample", "Abundance"), names_from = "Sample", values_from = "Abundance") %>%
+  filter(Organism == "murine")
+
+medians2 <- apply(dplyr::select(mediandatamur2, contains("TW")), 2, median, na.rm = TRUE) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample") %>%
+  dplyr::rename(Median = ".")
+
+databox2 <- left_join(databox2, medians2, by = "Sample") 
+
+# reorder according to median abundance
+
+ggplot(databox2, aes(x = reorder(Sample, -Median), y = Abundance, fill = Organism)) +
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(fill = "Organism") +
+  scale_fill_manual(breaks = c("murine", "human"),
+                     values = c("forestgreen", "deeppink4")) +
+  xlab("Samples") +
+  ylab("log2 LFQ Intensity")
+```

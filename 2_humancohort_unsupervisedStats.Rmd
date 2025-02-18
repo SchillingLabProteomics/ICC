@@ -1,0 +1,376 @@
+---
+title: "ICC - Mixomics whole cohort"
+author: "Miguel Cosenza & Tilman Werner - AG Schilling - Uniklinik Freiburg"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: null
+  toc: yes
+  toc_float: yes
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width=5, fig.height=4, error=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Required packages ----
+library(tidyverse)
+library(readxl)
+library(mixOmics)
+library(kableExtra)
+library(reactable)
+library(proDA)
+library(missForest)
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+library(circlize)
+
+## Required functions -----
+na_filter <- function(data, max_na_per_group, logtrans, minInt_inpute, fraction_Inpute = 5){
+      
+data_long <- pivot_longer(data = data,
+                             cols = matches("KB"),
+                             values_to = "Intensity",
+                             names_to = "Sample") 
+data_long <- left_join(data_long, annotation1, by = "Sample")
+
+if (logtrans){
+       data_long <- mutate(data_long,
+                           Intensity = log2(Intensity))
+}
+
+na_count <- group_by(data_long,
+                     ID, Group) %>%
+      summarise(na_count = sum(is.na(Intensity)),
+                total = n()) %>% 
+      ungroup() %>% 
+      mutate(NA_fraction = na_count/total)
+
+nafraction <- group_by(na_count,
+                           ID) %>%
+      summarise(max_nafraction = max(NA_fraction),
+                min_nafraction = min(NA_fraction)) %>%
+      ungroup()
+
+included_prots <- dplyr::filter(nafraction,
+                                max_nafraction <= max_na_per_group)
+
+
+
+if (minInt_inpute){
+  
+  min_intensityprot <- data_long %>% 
+  group_by(ID) %>% 
+  mutate(min_int = min(Intensity, na.rm = TRUE)) %>%
+  mutate(th_of_min_int = min_int/fraction_Inpute)
+  
+  data_long_nonas1 <- min_intensityprot %>% 
+  mutate(Intensity = ifelse(is.na(Intensity),
+                            yes = th_of_min_int,
+                            no = Intensity),
+         `Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+  dplyr::select(ID, `Group-Sample`, Intensity) %>%
+  dplyr::filter(ID %in% included_prots$ID)
+
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                                  names_from = `Group-Sample`,
+                                  values_from = Intensity)
+} else {
+  data_long_nonas1 <- filter(data_long,
+                           ID %in% included_prots$ID) %>% 
+      mutate(`Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+      dplyr::select(ID, `Group-Sample`, Intensity)
+  
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                       names_from = `Group-Sample`,
+                       values_from = Intensity)
+}
+}
+
+## Function to get the proteins by their maximal contribution ----
+
+getbycontribution <- function(data, splsda_model){
+          
+          n_comps <- splsda_model$ncomp
+          
+          prots_complist <- list()
+          
+          for (i in 1:n_comps){
+                    prots_complist[[i]] <- selectVar(splsda_model, comp = i)$value %>% 
+                              mutate(protein_id = row.names(.), comp = paste0("comp",i))
+          }
+          
+          prots_percomp <- do.call(bind_rows, prots_complist)
+          
+          data_long <- pivot_longer(data = data,
+                                    cols = matches("^S"),
+                                    values_to = "Intensity",
+                                    names_to = c("Group-Sample"))
+          
+          int_per_group <- separate(data_long, 
+                                    col = `Group-Sample`, 
+                                    sep = "-",
+                                    into = c("Group", "Sample")) %>% 
+                    group_by(ID, Group) %>% 
+                    summarise(median_Int = median(Intensity),
+                              mean_Int = mean(Intensity)) %>% 
+                    filter(ID %in% prots_percomp$protein_id)
+          
+          proteins_group <- int_per_group %>%
+                    ungroup() %>%
+                    group_by(ID) %>%
+                    filter(mean_Int == max(mean_Int)) %>% 
+                    mutate(duplicated = duplicated(ID)) %>%
+                    ungroup() %>% 
+                    arrange(Group)
+          
+          return(proteins_group)
+}
+
+`%nin%` = Negate(`%in%`)
+```
+
+## Load data and general wrangling  
+
+```{r}
+## Load and prepare data and annotation ----
+oridata <- read_excel("Data/Table S5 - ICC_proteomic_data_after_batch_correction.xlsx", na = "NA") %>%
+  dplyr::rename(ID = `...1`)
+
+annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
+              rename(Sample = 'Sample ID') %>%
+              rename(Group = 'Tissue') %>%
+              filter(Sample %nin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+              arrange(Sample)
+annotation1 <- dplyr::select(annotation, Sample, Group)
+predictors1 <- annotation1$Group
+
+oridata1 <- dplyr::select(oridata, one_of("ID", annotation1$Sample)) %>%
+  mutate_if(is.numeric, function(x, na.rm = TRUE) x - median(x, na.rm = TRUE))
+
+# Load batch correction info
+annot_batch <- read_excel("Data/annotation_batch_correction.xlsx") %>%
+  rename(Sample = "FullRunName")
+
+annotation <- left_join(annotation, annot_batch, by = "Sample")
+```
+Plot for ID numbers
+```{r}
+graph <- data.frame(colnames(oridata1[,-1]), colSums(!is.na(oridata1[,-1])), 1:ncol(oridata1[,-1])) 
+colnames(graph) <- c("Sample", "IDnumber", "Samples") 
+
+ggplot(graph, aes(Samples, sort(IDnumber))) +
+  geom_point(size = 1) +
+  labs(title = "Identified Protein Groups per Sample", y = "Protein Groups") +
+  scale_y_continuous(limits = c(0, 3000))
+
+ggplot(graph, aes(x = Samples, y = sort(IDnumber))) +
+  geom_col(fill = "blanchedalmond", color = "black") +
+  labs(y = "Identified Protein Groups") +
+  scale_y_continuous(limits = c(0, 3000)) +
+  theme_minimal() 
+  # theme(axis.text=element_text(size=12),
+  #       axis.title=element_text(size=14,face="bold"))
+
+paste("average identified protein groups = ", mean(graph$IDnumber))
+```
+
+Plot for missingness across cohort
+```{r}
+expr_dat <- mutate(oridata1, sumNA = rowSums(is.na(oridata1)))  %>%
+            mutate(completeness = (1 - (sumNA / (ncol(oridata1)-1))))
+
+graph   <-  dplyr::select(expr_dat, c("ID", "sumNA", "completeness")) %>%
+            arrange(-completeness) %>%
+            mutate(ProteinGroups = 1:nrow(expr_dat))
+
+lessthan80percent <- filter(graph, completeness >= 0.8)
+
+graph$completeness <- (1-graph$completeness) * 100
+
+ggplot(data = graph, aes(ProteinGroups, completeness)) +
+  geom_line() +
+  labs(title = "Missing Value Distribution", x = "Identified Protein Groups", y= "Missing Values [%]") +
+  geom_hline(yintercept = 20, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  scale_y_reverse()
+```
+
+# Data pre-processing  
+For unsupervised statistics (clustering, PCA) an imputed data matrix is used, since these methods cannot process missing values. All other analyses rely on the original, unimputed matrix.
+```{r}
+data_nonaimpaft <- na_filter(data = oridata1,
+                                max_na_per_group = 0.50,
+                                logtrans = FALSE,
+                                minInt_inpute = FALSE, 
+                                fraction_Inpute = 1)
+
+sample_nonaimpaft <- colnames(data_nonaimpaft)[-1]
+
+### Prep expression matrix and transpose-----
+tomat_noNAimpaft <-  data_nonaimpaft[,-1]
+
+protein_idsimpaft <- data_nonaimpaft$ID
+
+mat_noNAimpaft <- as.matrix(tomat_noNAimpaft)
+row.names(mat_noNAimpaft) <- protein_idsimpaft
+colnames(mat_noNAimpaft) <- sample_nonaimpaft
+
+t_mat_nonaimpaft <- t(mat_noNAimpaft) 
+
+### Log-2 transformation and median normalization  ----
+
+#data_1st_log2_med_noraft <- apply(X = mat_noNAimpaft, MARGIN = 2, FUN = log2)
+data_1st_log2_med_noraft <- median_normalization(mat_noNAimpaft)
+t_data_1st_log2_med_normaft <- t(data_1st_log2_med_noraft)
+
+data_1st_log2_med_noraftid <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "Protein")
+data_1st_log2_med_noraftid1 <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "ID")
+
+
+### Random forest missing value imputation ----
+
+if(!file.exists("results/imputfr_aft.rds")){
+  set.seed(546)
+  #tictoc::tic()
+  impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
+  #tictoc::toc()
+  write_rds(impfr_2, file = "results/imputfr_aft.rds")
+} else {
+  impfr_2 <- read_rds(file = "results/imputfr_aft.rds")
+}
+
+t_data_1st_log2_med_normimpaft <- impfr_2$ximp
+
+data_1st_log2_med_normimpaft <- t(t_data_1st_log2_med_normimpaft)
+```   
+
+# Principal component analysis (PCA)  
+```{r}
+pca_res = pca(t_data_1st_log2_med_normimpaft, ncomp = 10, center = TRUE, scale = TRUE)
+
+plot(pca_res)
+
+plotIndiv(pca_res, group = predictors1, ind.names = FALSE, 
+          legend = TRUE, title = 'PCA results', col.per.group = c("cadetblue", "red"))
+```   
+
+# Hierarchical Clustering   
+```{r, fig.width=12, fig.height=6, results="asis"}
+my_dist_t <- dist(t_data_1st_log2_med_normimpaft)
+my_hclust_t <- hclust(my_dist_t)
+plot(my_hclust_t)
+```
+
+#Heatmap
+Indicating measurement and digestion batches
+```{r}
+oridata2 <- column_to_rownames(oridata1, var = "ID")
+oridata2 <- filter(oridata2, rowSums(!is.na(oridata2)) / ncol(oridata2) > 0.8) %>%
+  dplyr::select(annotation$Sample) 
+subtractor <- apply(oridata2[,-1], 1, median, na.rm = TRUE)
+oridata2 <- oridata2 - subtractor
+oridata2 <- as.matrix(oridata2) 
+
+annotation$Group <- str_replace_all(annotation$Group, "normal", "TANM")
+
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(Tissue = annotation$Group,
+                      digest_batch = annotation$digestion_batch,
+                      MS_batch = annotation$MS_batch,
+                      measurement_order = anno_lines(annotation$measurement_order),
+                      col = list(Tissue = c("Tumor" = "red", "TANM" = "lightblue"),
+                                 MS_batch = colorRamp2(c(1, 11, 21), c("green", "yellow", "red")),
+                                 digest_batch = colorRamp2(c(1, 5, 10), c("green", "yellow", "red"))))
+
+heatmap <- Heatmap(oridata2, name = "∆ log2 LFQ", column_title = "Samples", row_title = "Proteins", 
+        show_row_names = FALSE, show_column_names = FALSE, column_names_gp = gpar(fontsize = 5),
+        show_row_dend = FALSE,
+        cluster_columns = my_hclust_t,
+        bottom_annotation = ha,
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+
+heatmap
+
+tiff("Heatmap.tiff", units = "in", width = 6, height = 8, res = 200, pointsize =(8*100/72))
+heatmap
+dev.off()
+```
+
+# Immunemap
+Including custom-made list of Immune Cell Markers
+```{r}
+oridata_immune <- column_to_rownames(oridata, var = "ID") %>%
+  filter(rowSums(!is.na(.)) / ncol(.) > 0.3) %>%
+  dplyr::select(annotation1$Sample)
+subtractor <- apply(oridata_immune, 1, median, na.rm = TRUE)
+oridata_immune <- oridata_immune - subtractor
+oridata_immune <- rownames_to_column(oridata_immune, var = "UniProt_ID_Human")
+
+immunelist <- read_excel("Data/CDMarkers_Profiling_ImmuneCells_Human_Mouse.xlsx") 
+immunelist1 <- filter(immunelist, !is.na(`Key Marker`))
+
+oridata_immune1 <- filter(oridata_immune, 
+                          UniProt_ID_Human %in% immunelist1$UniProt_ID_Human) %>%
+  left_join(dplyr::select(immunelist1, "UniProt_ID_Human", "Gene"), by = "UniProt_ID_Human") %>%
+  column_to_rownames(var = "Gene") %>%
+  dplyr::select(-UniProt_ID_Human) %>%
+  as.matrix()
+
+annotation_immune <- mutate(annotation, Group = factor(Group,
+                                                            levels = c("Tumor", "TANM")))
+
+immunelist_fit <- filter(immunelist1, Gene %in% rownames(oridata_immune1))
+```
+
+```{r}
+immunelist2 <- filter(immunelist, !is.na(Gene))
+
+oridata_immune2 <- filter(oridata_immune, 
+                          UniProt_ID_Human %in% immunelist2$UniProt_ID_Human) %>%
+  inner_join(dplyr::select(immunelist2, "UniProt_ID_Human", "Gene"), by = "UniProt_ID_Human") %>%
+  unique() %>%
+  remove_rownames() %>%
+  column_to_rownames(var = "Gene") %>%
+  dplyr::select(-UniProt_ID_Human) %>%
+  as.matrix()
+
+annotation_immune2 <- mutate(annotation, Group = factor(Group,
+                                                            levels = c("Tumor", "TANM")))
+
+immunelist_fit2 <- filter(immunelist2, Gene %in% rownames(oridata_immune2))
+```
+
+```{r}
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(Tissue = annotation_immune$Group,
+                   col = list(Tissue = c("Tumor" = "red", "TANM" = "lightblue")),
+                   show_legend = FALSE)
+
+hb = rowAnnotation(Category = immunelist_fit$`Key Marker`,
+                   show_annotation_name = FALSE, 
+                   show_legend = FALSE)
+
+Heatmap <- Heatmap(oridata_immune2, name = "∆ log2 LFQ", column_title = " ", row_title = "", 
+        col = colorRamp2(c(-5, 0, 5), c("blue", "grey93", "red")),
+        show_row_names = TRUE, show_column_names = FALSE, 
+        row_names_side = "left", row_names_gp = gpar(fontsize = 5),
+        show_row_dend = FALSE, show_column_dend = FALSE, 
+        cluster_rows = TRUE, cluster_columns = FALSE,
+        column_split = annotation_immune$Group, 
+        #row_split = immunelist_fit$`Key Marker`, 
+        row_title_rot = 0, 
+        row_title_gp = gpar(fontsize = 5), row_title_side = "right",
+        bottom_annotation = ha,  
+        #right_annotation = hb,
+        na_col = "white",
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+Heatmap
+
+tiff("Heatmap_immune2.tiff", units = "in", width = 5, height = 5, res = 300, pointsize =(5*100/72))
+Heatmap
+dev.off()
+```

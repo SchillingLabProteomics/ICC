@@ -1,0 +1,324 @@
+---
+title: "FragNTerminomics ICC"
+output: html_document
+date: '2022-08-29'
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Fragterminomics)
+library(here)
+library(ggpubr)
+library(seqinr)
+library(dagLogo)
+library(missForest)
+library(proDA)
+library(mixOmics)
+library(devtools)
+library(diann)
+library(readxl)
+`%notin%` <- Negate(`%in%`)
+```
+
+```{r}
+#load data
+dataraw <- diann_load("Data/ICC_humancohort_semi-specific_DIA-NNoutput.tsv") %>%
+  filter(Proteotypic == 1)
+
+#remove filepath from File.Name
+dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".*\\\\", ""))
+dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".raw.mzml$", ""))
+
+#extract MQ-LFQ data from file - Genes.MQLFQ is already normalized via DIA-NN!
+precursors_orig <- diann_matrix(dataraw, pg.q = 0.01)
+write.csv(precursors_orig, "Data/semi-specific_precursors_raw.csv")
+
+# match identified sequences to proteins
+sequences <- unique(dplyr::select(dataraw, "Stripped.Sequence", "Precursor.Id", "Protein.Group"))
+
+precursors <- rownames_to_column(as.data.frame(precursors_orig), var = "Precursor.Id") %>%
+            right_join(sequences, by = "Precursor.Id") %>%
+            dplyr::select("Stripped.Sequence", "Precursor.Id", "Protein.Group", contains("KB"))
+
+write.csv(precursors, "Data/semi-specific_precursors_sequence+ID+Abundance.csv")
+```
+
+# Load matrix and annotation
+```{r, echo=FALSE, message=FALSE, include=FALSE}
+sequences <- read.csv("Data/semi-specific_precursors_sequence+ID+Abundance.csv")  %>%
+  dplyr::select(-c(KB42, KB147, KB53, KB213, KB215, KB55, KB23, KB209))
+sequences$Protein.Group <- str_split_fixed(sequences$Protein.Group, " ", n = Inf)
+sequences$Protein.Group  <- sequences$Protein.Group[,1]
+
+annot <- read_excel("Data/Table S1 - Patient Table.xlsx", na = "NA") %>%
+              dplyr::rename(Sample = 'Sample ID') %>%
+              filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+              arrange(Sample)
+
+fasta_human <- read.fasta("data/Human-EBI-reference_one-protein-per-gene_20200109_iRTs.fasta", as.string = TRUE, seqtype = "AA")
+
+fullytrypticcohort <- read_excel("Data/Table S5 - ICC_proteomic_data_after_batch_correction.xlsx", na = "NA") %>%
+  dplyr::rename(ID = `...1`)
+```
+
+```{r,echo=FALSE, message=FALSE, include=FALSE}
+pept_2_protein <- sequences %>% 
+  mutate(Genes = str_remove(string = Protein.Group,
+                           pattern = "\\ .*"),
+         Peptide = Stripped.Sequence) %>%
+  mutate(Genes = str_trim(Genes),
+         Peptide = str_trim(Peptide)) %>%
+  dplyr::select(Genes, Peptide)
+```
+
+# Annotate peptides as fully- or semi-tryptic
+```{r,echo=FALSE, message=FALSE, include=FALSE}
+cleavage_annotated_peptides <- annotate_peptides(peptide2protein = pept_2_protein, 
+                                                       fasta = fasta_human,
+                                                       decoy_tag = "rev_")
+```
+
+```{r, echo=FALSE, message=FALSE, include=FALSE}
+# filter semi-spec peptides from all identified peptides
+semispec_sequences <- filter(cleavage_annotated_peptides,
+                             specificity == "semi_specific" & is_terminal == "not_terminal")
+write.csv(semispec_sequences, "semi-spec_sequences.csv")
+
+semi_data <- filter(sequences, Stripped.Sequence %in% semispec_sequences$Peptide) %>%
+  dplyr::select(-X)
+write.csv(semi_data, "semi-spec_data.csv")
+```
+
+```{r, echo=FALSE, message=FALSE}
+# barplot of overall identified peptides
+cleavage_annotated_peptides <- mutate(cleavage_annotated_peptides, 
+                                     specific = ifelse(specificity == "semi_specific" & 
+                                                         is_terminal == "not_terminal",
+                                     "semi-specific", "specific")) %>%
+  filter(!is.na(specific))
+
+ggplot(cleavage_annotated_peptides, aes(x = specific)) +
+  geom_bar() +
+  xlab("") +
+  ylab("Peptide Count") +
+  theme_minimal() +
+  labs(title = "ICC", subtitle = "semi-specific analysis")
+
+semi_data_raw <- filter(sequences, Stripped.Sequence %in% semispec_sequences$Peptide)
+  
+# boxplot of % semi-specific peptides per sample
+semi_percent <- data.frame(total = colSums(dplyr::select(sequences, contains("KB")), na.rm = TRUE)) %>%
+  rownames_to_column(var = "Sample") %>%
+  mutate(semi = colSums(dplyr::select(semi_data_raw, contains("KB")), na.rm = TRUE)) %>%
+  mutate(percent = (semi / total)*100) %>%
+  left_join(dplyr::select(annot, "Sample", "Tissue"), by = "Sample") 
+```
+
+```{r, echo=FALSE, message=FALSE}
+annot_select <- dplyr::select(annot, "Sample", "cluster")
+annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Tissue") %>%
+  pivot_wider(names_from = "Tissue", values_from = "Sample") %>%
+  dplyr::rename(Sample = "Tumor") %>%
+  left_join(annot_select, by = "Sample") %>%
+  pivot_longer(cols = c("Sample", "normal"), names_to = "bla", values_to = "Sample") %>%
+  filter(!is.na(Sample)) %>%
+  filter(!is.na(cluster)) %>%
+  left_join(semi_percent, by = "Sample")
+
+annot_plot$Tissue <- str_replace_all(annot_plot$Tissue, "normal", "TANM")
+
+ggplot(annot_plot, aes(x = Tissue, y = percent, color = Tissue)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("red", "blue")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("TANM", "Tumor")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() +
+  facet_grid(~ cluster)
+```
+
+```{r}
+semi_spec_data <- dplyr::select(semi_data, "Stripped.Sequence", "Precursor.Id", "Protein.Group", one_of(annot$Sample))
+semi_spec_data$Stripped.Sequence <- str_c(semi_spec_data$Stripped.Sequence, 
+                                          semi_spec_data$Protein.Group, sep = "_")
+semi_spec_data <- dplyr::select(semi_spec_data, -c(Precursor.Id, Protein.Group)) %>%
+  dplyr::rename(ID = "Stripped.Sequence") 
+
+annotation1 <- filter(annot_plot, Sample %in% colnames(semi_spec_data)) %>%
+  mutate(Group = str_c(Tissue, " ", cluster)) %>%
+  group_by(Patient_No) %>%
+  filter(n() > 1) %>%
+  ungroup()
+predictors1 <- annotation1$Group
+
+semi_spec_data <- mutate(semi_spec_data, 
+                         ID = ifelse(duplicated(semi_spec_data$ID) == TRUE, 
+                                     paste(semi_spec_data$ID, "_dupl", sep = ""), semi_spec_data$ID)) %>%
+  column_to_rownames(var = "ID") %>%
+  log2() %>%
+  rownames_to_column(var = "ID") %>%
+  dplyr::select("ID", annotation1$Sample)
+```
+
+```{r}
+## Required functions -----
+na_filter <- function(data, max_na_per_group, logtrans, minInt_inpute, fraction_Inpute = 5){
+      
+data_long <- pivot_longer(data = data,
+                             cols = matches("KB"),
+                             values_to = "Intensity",
+                             names_to = "Sample") 
+data_long <- left_join(data_long, annotation1, by = "Sample")
+
+if (logtrans){
+       data_long <- mutate(data_long,
+                           Intensity = log2(Intensity))
+}
+
+na_count <- group_by(data_long,
+                     ID, Group) %>%
+      summarise(na_count = sum(is.na(Intensity)),
+                total = n()) %>% 
+      ungroup() %>% 
+      mutate(NA_fraction = na_count/total)
+
+nafraction <- group_by(na_count,
+                           ID) %>%
+      summarise(max_nafraction = max(NA_fraction),
+                min_nafraction = min(NA_fraction)) %>%
+      ungroup()
+
+included_prots <- dplyr::filter(nafraction,
+                                max_nafraction <= max_na_per_group)
+
+
+
+if (minInt_inpute){
+  
+  min_intensityprot <- data_long %>% 
+  group_by(ID) %>% 
+  mutate(min_int = min(Intensity, na.rm = TRUE)) %>%
+  mutate(th_of_min_int = min_int/fraction_Inpute)
+  
+  data_long_nonas1 <- min_intensityprot %>% 
+  mutate(Intensity = ifelse(is.na(Intensity),
+                            yes = th_of_min_int,
+                            no = Intensity),
+         `Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+  dplyr::select(ID, `Group-Sample`, Intensity) %>%
+  dplyr::filter(ID %in% included_prots$ID)
+
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                                  names_from = `Group-Sample`,
+                                  values_from = Intensity)
+} else {
+  data_long_nonas1 <- filter(data_long,
+                           ID %in% included_prots$ID) %>% 
+      mutate(`Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+      dplyr::select(ID, `Group-Sample`, Intensity)
+  
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                       names_from = `Group-Sample`,
+                       values_from = Intensity)
+}
+}
+
+## Function to get the proteins by their maximal contribution ----
+
+getbycontribution <- function(data, splsda_model){
+          
+          n_comps <- splsda_model$ncomp
+          
+          prots_complist <- list()
+          
+          for (i in 1:n_comps){
+                    prots_complist[[i]] <- selectVar(splsda_model, comp = i)$value %>% 
+                              mutate(protein_id = row.names(.), comp = paste0("comp",i))
+          }
+          
+          prots_percomp <- do.call(bind_rows, prots_complist)
+          
+          data_long <- pivot_longer(data = data,
+                                    cols = matches("^S"),
+                                    values_to = "Intensity",
+                                    names_to = c("Group-Sample"))
+          
+          int_per_group <- separate(data_long, 
+                                    col = `Group-Sample`, 
+                                    sep = "-",
+                                    into = c("Group", "Sample")) %>% 
+                    group_by(ID, Group) %>% 
+                    summarise(median_Int = median(Intensity),
+                              mean_Int = mean(Intensity)) %>% 
+                    filter(ID %in% prots_percomp$protein_id)
+          
+          proteins_group <- int_per_group %>%
+                    ungroup() %>%
+                    group_by(ID) %>%
+                    filter(mean_Int == max(mean_Int)) %>% 
+                    mutate(duplicated = duplicated(ID)) %>%
+                    ungroup() %>% 
+                    arrange(Group)
+          
+          return(proteins_group)
+}
+```
+
+```{r}
+data_nonaimpaft <- na_filter(data = semi_spec_data,
+                                max_na_per_group = 0.50,
+                                logtrans = FALSE,
+                                minInt_inpute = FALSE, 
+                                fraction_Inpute = 1)
+
+sample_nonaimpaft <- colnames(data_nonaimpaft)[-1]
+
+### Prep expression matrix and transpose-----
+tomat_noNAimpaft <-  data_nonaimpaft[,-1]
+
+protein_idsimpaft <- data_nonaimpaft$ID
+
+mat_noNAimpaft <- as.matrix(tomat_noNAimpaft)
+row.names(mat_noNAimpaft) <- protein_idsimpaft
+colnames(mat_noNAimpaft) <- sample_nonaimpaft
+
+t_mat_nonaimpaft <- t(mat_noNAimpaft) 
+
+### Log-2 transformation and median normalization  ----
+
+data_1st_log2_med_noraft <- median_normalization(mat_noNAimpaft)
+t_data_1st_log2_med_normaft <- t(data_1st_log2_med_noraft)
+
+data_1st_log2_med_noraftid <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "Protein")
+data_1st_log2_med_noraftid1 <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "ID")
+
+
+### Random forest missing value imputation ----
+
+if(!file.exists("results/imputfr_aft_semi.rds")){
+  set.seed(546)
+  #tictoc::tic()
+  impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
+  #tictoc::toc()
+  write_rds(impfr_2, file = "results/imputfr_aft_semi.rds")
+} else {
+  impfr_2 <- read_rds(file = "results/imputfr_aft_semi.rds")
+}
+
+t_data_1st_log2_med_normimpaft <- impfr_2$ximp
+
+data_1st_log2_med_normimpaft <- t(t_data_1st_log2_med_normimpaft)
+```
+
+```{r fig.width=5, fig.height=4}
+res_plsdaf3 <- plsda(t_data_1st_log2_med_normimpaft, predictors1, 
+                   ncomp = 10)  # set ncomp to 10 for performance assessment later
+
+plotIndiv(res_plsdaf3 , comp = 1:2,
+          group = predictors1, ind.names = FALSE, 
+          ellipse = TRUE, legend = TRUE, title = 'PLSDA results',
+          col.per.group = c("lightgrey", "darkgrey", "cornflowerblue", "orange"))
+```   
