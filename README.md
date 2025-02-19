@@ -70,7 +70,9 @@ PCA-based co-regulation analysis.
 
 DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of the manuscript. The DIA-NN output files are: 
 
-
+`ICC_humancohort_DIA-NNoutput.tsv`
+`ICC_humancohort_semi-specific_DIA-NNoutput.tsv`
+`ICC_xenografts_DIA-NNoutput.tsv`
 
 Expression Matrices: Available in Data/, for users who want to start with statistical analyses directly.
 
