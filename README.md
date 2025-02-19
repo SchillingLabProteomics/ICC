@@ -68,7 +68,9 @@ PCA-based co-regulation analysis.
 
 ## Input Data
 
-DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of the manuscript.
+DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of the manuscript. The DIA-NN output files are: 
+
+
 
 Expression Matrices: Available in Data/, for users who want to start with statistical analyses directly.
 
