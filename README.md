@@ -68,13 +68,19 @@ PCA-based co-regulation analysis.
 
 ## Input Data
 
-DIA-NN output files: Download from MassIVE Repository and place them in the Data/ folder. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of the manuscript. The DIA-NN output files are: 
+All mass spectrometric raw data and analysis results are deposited in the MassIVE repository together with the relevant clinical annotation. Reviewer login credentials for MassIVE are outlined in the Data Sharing section of this manuscript. Once you are logged in, click "Browse Dataset Files". Please download the files outlined below and copy them into the data folder before executing the code. 
 
-`ICC_humancohort_DIA-NNoutput.tsv`
-`ICC_humancohort_semi-specific_DIA-NNoutput.tsv`
-`ICC_xenografts_DIA-NNoutput.tsv`
+DIA-NN output files (Filter by Collection quant):<br>
+`ICC_humancohort_DIA-NNoutput.tsv` `ICC_humancohort_semi-specific_DIA-NNoutput.tsv` `ICC_xenografts_DIA-NNoutput.tsv`
 
-Expression Matrices: Available in Data/, for users who want to start with statistical analyses directly.
+Expression Matrices (Filter by Collection quant):<br>
+`ICC_humancohort_matrix.tsv` `semi-specific_precursors_raw.csv` `semi-specific_precursors_sequence+ID+Abundance.csv` `ICC_xenografts_matrix.csv` `ICC_xenografts_matrix_humanproteins.tsv`
+
+Analysis-specific annotation (Filter by Collection metadata):<br>
+`annotation_batch_correction.xlsx` `study_design.xlsx`
+
+Charts and Tables (Filter by Collection metadata; also provided as supplementary tables during manuscript submission):  
+`Table S1 - Patient Table.xlsx` `Table S2 - Coxph_adj.hits_stats.xlsx` `Table S3 - Cox_stats_table.xlsx` <br> `Table S4 - PDX_treatment_eft226.xlsx` `Table S5 - ICC_proteomic_data_after_batch_correction.xlsx` <br> `Table S6 - PDX proteomic data.xlsx` `Table S7 - Differential Proteins Clusters.xlsx` <br> `Table S8 - Differential Proteins Tumor TANM .xlsx` 
 
 ## Notes
 
