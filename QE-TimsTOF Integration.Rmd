@@ -1,0 +1,149 @@
+---
+title: "Integration MSKCC-Freiburg"
+author: "Tilman Werner"
+date: "2025-04-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(mixOmics)
+library(kableExtra)
+library(reactable)
+library(proDA)
+library(missForest)
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+library(circlize)
+library(smplot2)
+library(eulerr)
+`%notin%` = Negate(`%in%`)
+```
+
+```{r cars}
+TimsTOF_orig <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv") %>%
+  dplyr::select(-X) 
+
+QE_orig <- read.csv("Data/QE_ICC_log2_median.csv") %>%
+  dplyr::select(-X) %>%
+  dplyr::rename(Protein = "ID") %>%
+  dplyr::select("Protein", one_of(colnames(TimsTOF_orig)))
+
+commonprots <- intersect(TimsTOF_orig$Protein, QE_orig$Protein)
+
+#Venn Diagram of detected proteins
+fit <- euler(c(
+  TimsTOF = (length(TimsTOF_orig$Protein) - length(commonprots)),
+  QE = (length(QE_orig$Protein) - length(commonprots)),
+  "TimsTOF&QE" = length(commonprots)
+))
+plot4 <- plot(fit, fills = list(fill = c("lightblue", "blue"), alpha = 0.5), quantities = TRUE)
+plot4
+
+tiff("results_QE-TimsTOF Integration/VennCorrelation.tiff", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot4
+dev.off()
+
+png("results_QE-TimsTOF Integration/VennCorrelation.png", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot4
+dev.off()
+
+# Venn Diagram of detected proteins with 80% coverage in either MS
+TimsTOF_80 <- filter(TimsTOF_orig, rowSums(!is.na(TimsTOF_orig)) / ncol(TimsTOF_orig) > 0.8)
+QE_80 <- filter(QE_orig, rowSums(!is.na(QE_orig)) / ncol(QE_orig) > 0.8)
+commonprots_80 <- intersect(TimsTOF_80$Protein, QE_80$Protein)
+
+fit <- euler(c(
+  TimsTOF = (length(TimsTOF_80$Protein) - length(commonprots_80)),
+  QE = (length(QE_80$Protein) - length(commonprots_80)),
+  "TimsTOF&QE" = length(commonprots_80)
+))
+plot3 <- plot(fit, fills = list(fill = c("lightblue", "blue"), alpha = 0.5), quantities = TRUE)
+plot3
+
+tiff("results_QE-TimsTOF Integration/VennCorrelation_20NA.tiff", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot3
+dev.off()
+
+png("results_QE-TimsTOF Integration/VennCorrelation_20NA.png", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot3
+dev.off()
+
+QEexclusive <- filter(QE_orig, Protein %notin% commonprots)
+write.csv(QEexclusive, "results_QE-TimsTOF Integration/QEexclusive.csv")
+QEexclusive_80 <- filter(QE_80, Protein %notin% commonprots_80)
+write.csv(QEexclusive_80, "results_QE-TimsTOF Integration/QEexclusive_80.csv")
+
+TimsTOF <- filter(TimsTOF_orig, Protein %in% commonprots)
+QE <- filter(QE_orig, Protein %in% commonprots)
+```
+
+```{r pressure, echo=FALSE}
+Tims_long <- pivot_longer(TimsTOF, cols = contains("KB"), names_to = "Sample", values_to = "Abundance") %>%
+  mutate(device = "TimsTOF") 
+QE_long <- pivot_longer(QE, cols = contains("KB"), names_to = "Sample", values_to = "Abundance") %>%
+  mutate(device = "QE")
+
+combined <- bind_rows(Tims_long, QE_long) %>%
+  pivot_wider(names_from = "device", values_from = "Abundance") 
+
+plot <- ggplot(combined, aes(x = TimsTOF, y = QE)) +
+  geom_point(size = 0.1) +
+  sm_statCorr(corr_method = "pearson") +
+  facet_wrap(~ Sample, ncol = 10) +
+  theme_classic() +
+  labs(title = "ICC TimsTOF vs. QE", subtitle = "Pearson Correlation")
+
+tiff("results_QE-TimsTOF Integration/Correlation.tiff", units = "in", width = 15, height = 20, res = 400, pointsize =(20*100/72))
+plot
+dev.off()
+
+png("results_QE-TimsTOF Integration/Correlation.png", units = "in", width = 15, height = 20, res = 400, pointsize =(20*100/72))
+plot
+dev.off()
+
+combined2 <- group_by(combined, Sample) %>%
+  summarise(
+    correlation = cor(TimsTOF, QE, method = "pearson", use = "complete.obs"),
+    pval = cor.test(TimsTOF, QE, method = "pearson", use = "complete.obs")$p.value,
+    .groups = "drop"
+  )
+
+meanR <- mean(combined2$correlation)
+
+plot1 <- ggplot(combined2, aes(x = "", y = correlation)) +
+  geom_violin(fill = "lightblue") +
+  geom_boxplot(width = 0.2) +
+  #geom_dotplot(binaxis = "y", stackdir = "center") +
+  theme_minimal() +
+  ylab(expression(paste("Pearson Correlation ", R^2))) +
+  labs(title = "Correlation Coefficients R", subtitle = "Pearson Correlation")
+plot1
+
+tiff("results_QE-TimsTOF Integration/CorrCoefficients.tiff", units = "in", width = 3, height = 4, res = 300, pointsize =(4*100/72))
+plot1
+dev.off()
+
+png("results_QE-TimsTOF Integration/CorrCoefficients.png", units = "in", width = 3, height = 4, res = 300, pointsize =(4*100/72))
+plot1
+dev.off()
+
+plot2 <- ggplot(combined2, aes(x = "", y = pval)) +
+  geom_violin(fill = "lightblue") +
+  theme_minimal() +
+  #ylim(0,-300) +
+  labs(title = "p-values", subtitle = "Pearson Correlation")
+plot2
+
+tiff("results_QE-TimsTOF Integration/CorrPValues.tiff", units = "in", width = 3, height = 4, res = 300, pointsize =(4*100/72))
+plot2
+dev.off()
+
+png("results_QE-TimsTOF Integration/CorrPValues.png", units = "in", width = 3, height = 4, res = 300, pointsize =(4*100/72))
+plot2
+dev.off()
+```
+
+
