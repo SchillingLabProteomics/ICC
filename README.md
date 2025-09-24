@@ -6,7 +6,7 @@ This repository contains the analysis pipeline for the manuscript:
 
 "Proteomic Characterization of Intrahepatic Cholangiocarcinoma Identifies Risk-Stratifying Subgroups, Proteins Associated with Time-To-Recurrence, and mTOR Effector Molecule EIF4A1 as a Druggable Therapeutic Target."
 
-The study is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. The cohort was analyzed using DIA-NN 1.7 with a fully tryptic database, and a semi-specific database to study proteolytic events. Additionally, we analyzed 9 patient-derived ICC xenografts (PDX).
+The study is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. The cohort was analyzed using DIA-NN 1.9.2 with a fully tryptic database, and a semi-specific database to study proteolytic events. Additionally, we analyzed 9 patient-derived ICC xenografts (PDX).
 
 
 ## How to Use the Code
@@ -15,10 +15,9 @@ The scripts are numbered to correspond to the main steps in the analysis pipelin
 
 ### 1. Data Preparation & Batch Correction
 
-  `1_humancohort_LoadData&BatchCorrection.R`
+  `1_humancohort_LoadData.R`
 
-  Loads DIA-NN output and performs batch correction.
-  Outputs expression matrices for further analysis.
+  Loads DIA-NN output and generate expression matrices for further analysis.
 
 ### 2. Unsupervised Analysis of Human Cohort
 
@@ -39,12 +38,24 @@ Performs differential expression analysis between tumor and tumor-adjacent non-m
 
 Clustering and PCA of tumor samples.
 
-### 5. ECM vs. Turnover Cluster Analysis
+### 4B. Unsupervised Analysis of TANM Samples
 
-`5_humancohort_ECM-TurnoverCluster.R`
+`4B_humancohort_TANM_unsupervisedStats.Rmd`
 
-Differential expression analysis between ECM-cluster and protein-turnover-cluster using limma.
+Clustering and PCA of TANM samples.
+
+### 5. ECM vs. Proliferation Cluster Analysis
+
+`5_humancohort_ECM-ProliferationCluster.R`
+
+Differential expression analysis between ECM-cluster and proliferation-cluster using limma.
 Volcano plots and Kaplan-Meier survival analysis.
+
+### 5B.TANM Cluster Analysis
+
+`5B_humancohort_TANMCluster.R`
+
+Differential expression analysis between TANM-clusters incl. Gene Set Enrichment.
 
 ### 6. Survival Analysis
 
