@@ -1,0 +1,328 @@
+---
+title: "ICC - Mixomics"
+author: "Miguel Cosenza, Tilman Werner - AG Schilling - Uniklinik Freiburg"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+    html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width=5, fig.height=4, error=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Required packages ----
+library(tidyverse)
+library(readxl)
+library(mixOmics)
+library(kableExtra)
+library(reactable)
+library(proDA)
+library(missForest)
+library(dplyr)
+library(M3C)
+library(made4)
+library(ComplexHeatmap)
+library(circlize)
+library(lubridate)
+library(patchwork)
+library(rcompanion)
+library(gtsummary)
+`%notin%` <- Negate(`%in%`)
+
+## Required functions -----
+na_filter <- function(data, max_na_per_group, logtrans, minInt_inpute, fraction_Inpute = 5){
+      
+data_long <- pivot_longer(data = data,
+                             cols = matches("KB"),
+                             values_to = "Intensity",
+                             names_to = "Sample") 
+data_long <- left_join(data_long, annotation1, by = "Sample")
+
+if (logtrans){
+       data_long <- mutate(data_long,
+                           Intensity = log2(Intensity))
+}
+
+na_count <- group_by(data_long,
+                     Protein, Group) %>%
+      summarise(na_count = sum(is.na(Intensity)),
+                total = n()) %>% 
+      ungroup() %>% 
+      mutate(NA_fraction = na_count/total)
+
+nafraction <- group_by(na_count,
+                           Protein) %>%
+      summarise(max_nafraction = max(NA_fraction),
+                min_nafraction = min(NA_fraction)) %>%
+      ungroup()
+
+included_prots <- dplyr::filter(nafraction,
+                                max_nafraction <= max_na_per_group)
+
+
+
+if (minInt_inpute){
+  
+  min_intensityprot <- data_long %>% 
+  group_by(Protein) %>% 
+  mutate(min_int = min(Intensity, na.rm = TRUE)) %>%
+  mutate(th_of_min_int = min_int/fraction_Inpute)
+  
+  data_long_nonas1 <- min_intensityprot %>% 
+  mutate(Intensity = ifelse(is.na(Intensity),
+                            yes = th_of_min_int,
+                            no = Intensity),
+         `Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+  dplyr::select(Protein, `Group-Sample`, Intensity) %>%
+  dplyr::filter(Protein %in% included_prots$Protein)
+
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                                  names_from = `Group-Sample`,
+                                  values_from = Intensity)
+} else {
+  data_long_nonas1 <- filter(data_long,
+                           Protein %in% included_prots$Protein) %>% 
+      mutate(`Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
+      dplyr::select(Protein, `Group-Sample`, Intensity)
+  
+  data_maxperc_nas <- pivot_wider(data_long_nonas1,
+                       names_from = `Group-Sample`,
+                       values_from = Intensity)
+}
+}
+
+## Function to get the proteins by their maximal contribution ----
+
+getbycontribution <- function(data, splsda_model){
+          
+          n_comps <- splsda_model$ncomp
+          
+          prots_complist <- list()
+          
+          for (i in 1:n_comps){
+                    prots_complist[[i]] <- selectVar(splsda_model, comp = i)$value %>% 
+                              mutate(protein_id = row.names(.), comp = paste0("comp",i))
+          }
+          
+          prots_percomp <- do.call(bind_rows, prots_complist)
+          
+          data_long <- pivot_longer(data = data,
+                                    cols = matches("^S"),
+                                    values_to = "Intensity",
+                                    names_to = c("Group-Sample"))
+          
+          int_per_group <- separate(data_long, 
+                                    col = `Group-Sample`, 
+                                    sep = "-",
+                                    into = c("Group", "Sample")) %>% 
+                    group_by(Protein, Group) %>% 
+                    summarise(median_Int = median(Intensity),
+                              mean_Int = mean(Intensity)) %>% 
+                    filter(Protein %in% prots_percomp$protein_id)
+          
+          proteins_group <- int_per_group %>%
+                    ungroup() %>%
+                    group_by(Protein) %>%
+                    filter(mean_Int == max(mean_Int)) %>% 
+                    mutate(duplicated = duplicated(Protein)) %>%
+                    ungroup() %>% 
+                    arrange(Group)
+          
+          return(proteins_group)
+}
+
+`%nin%` = Negate(`%in%`)
+```
+
+## Load and prepare data and annotation 
+```{r}
+oridata <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
+  dplyr::select(-X)
+
+annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
+              filter(Sample %nin% c("KB106", "KB107", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209", "KB167")) %>%
+              arrange(Sample)
+annotation1 <- dplyr::select(annotation, Sample, Group)
+annotation2 <- filter(annotation, Group == "normal") 
+
+oridata1 <- dplyr::select(oridata, "Protein", annotation2$Sample) 
+```
+
+# Data pre-processing  
+For unsupervised statistics (clustering, PCA) an imputed data matrix is used, since these methods cannot process missing values. All other analyses rely on the original, unimputed matrix.
+```{r}
+t_data_1st_log2_med_normaft <- column_to_rownames(oridata1, var = "Protein") %>%
+  filter(rowSums(!is.na(.)) / ncol(.) >= 0.8) %>%
+  t()
+
+### Random forest missing value imputation ----
+
+if(!file.exists("results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")){
+  set.seed(546)
+  #tictoc::tic()
+  impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
+  #tictoc::toc()
+  write_rds(impfr_2, file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")
+} else {
+  impfr_2 <- read_rds(file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")
+}
+
+t_data_1st_log2_med_normimpaft <- impfr_2$ximp
+
+data_1st_log2_med_normimpaft <- t(t_data_1st_log2_med_normimpaft)
+```   
+
+# Hierarchical Clustering   
+```{r, fig.width=12, fig.height=6, results="asis"}
+my_dist_t <- dist(t_data_1st_log2_med_normaft)
+my_hclust_t <- hclust(my_dist_t)
+plot(my_hclust_t, labels = FALSE)
+
+tiff("results_4B_humancohort_TAMN_unsupervisedStats/clustering.tiff", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+plot(my_hclust_t, labels = FALSE)
+dev.off()
+```
+
+# M3C determination of most appropiate number of subgroups in cluster
+```{r fig.width=12, fig.height=6, results="asis", echo=FALSE, include=FALSE}
+m3c <- M3C(data_1st_log2_med_normimpaft, clusteralg = "hc")
+m3c
+```
+
+# added for comparison -> not part of original script
+```{r fig.width=12, fig.height=6, results="asis"}  
+cat("\n**Cut the generated tree in n groups** (k):\n")
+my_hclust_t_3_grp <- cutree(my_hclust_t, k = 2)
+plot(my_hclust_t)
+rect.hclust(my_hclust_t, k=2, border="red")
+clusters <- as.data.frame(my_hclust_t_3_grp) %>%
+  rownames_to_column(var = "Sample") %>%
+  dplyr::rename(clusterTANM = "my_hclust_t_3_grp")
+clusters$Sample <- str_remove(clusters$Sample, "Tumor-")
+annotation2 <- left_join(annotation2, clusters, by = "Sample")
+annotation2 <- mutate(annotation2, clusterTANM = paste("cluster", clusterTANM, sep = ""))
+write_csv(annotation2, file = "results_4B_humancohort_TAMN_unsupervisedStats/annotation_cluster_k=2.csv")
+```
+
+```{r}
+# create Patient Table 2
+summary1 <- dplyr::select(annotation2, "Age (years)", "Ethnicity", "Sex", "PSC", "Hep B/C",
+                          "Tumor Stage", "Radiotherapy", "Duct Type", "Lymphangioinvasion", "Satellite Nodules", 
+                          "Liver Capsule Invasion", "Portal Spread", 
+                          "Overall Tumor Budding", "intratumoral Tumor Budding", "peritumoral Tumor Budding",
+                          "clusterTANM") 
+
+summary1[summary1 == "NA"] <- NA
+summary1[summary1 == "NT"] <- NA
+summary1[summary1 == "NR"] <- NA
+summary1[summary1 == "NotTested"] <- NA
+summary1 <- droplevels(summary1)
+
+gtsumm <- tbl_summary(summary1, by = "clusterTANM") %>%
+  add_n() %>%
+  add_p() %>%
+  modify_header(label = "**ICC cohort**")
+gtsumm
+
+as_gt(gtsumm) %>%
+  gt::gtsave(filename = "results_4B_humancohort_TAMN_unsupervisedStats/ICC_PatTable_clusters.html")
+```
+
+
+# Principal component analysis (PCA)
+```{r}
+pca_res = mixOmics::pca(t_data_1st_log2_med_normimpaft, ncomp = 10, center = TRUE, scale = TRUE)
+
+plot(pca_res)
+plotIndiv(pca_res, ind.names = FALSE)
+
+pca <- plotIndiv(pca_res, ind.names = FALSE)
+pca_df <- pca$df %>%
+  rownames_to_column(var = "Sample") %>%
+  mutate(Sample = str_remove_all(Sample, "Tumor-")) %>%
+  inner_join(annotation2, by = "Sample") 
+
+plot1 <- ggplot(pca_df, aes(x, y, color = clusterTANM)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  xlab(pca$graph$labels$x) +
+  ylab(pca$graph$labels$y) +
+  labs(title = "PCA clusters", subtitle = "new clusters") +
+  scale_color_manual(values = c("forestgreen", "purple"),
+                     breaks = c("cluster1", "cluster2"))
+plot1
+
+tiff("results_4B_humancohort_TAMN_unsupervisedStats/PCA_newclust.tiff", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot1
+dev.off()
+```   
+
+```{r}
+annot_dat1 <- read.csv("results_4_humancohort_tumor_unsupervisedStats/annotation_cluster_k=2.csv") %>%
+  filter(Group == "Tumor") %>%
+  filter(Sample %notin% c("KB107", "KB167", "KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  arrange(Sample) 
+
+annotations <- pivot_wider(dplyr::select(annotation, "Sample", "Group", "Patient_No"), names_from = "Patient_No", values_from = "Sample") %>%
+  column_to_rownames(var = "Group") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Patient_No") %>%
+  mutate(Patient_No = as.numeric(Patient_No)) %>%
+  left_join(dplyr::select(annot_dat1, "Sample", "Patient_No"), by = "Patient_No") %>%
+  dplyr::select(-Sample) %>%
+  filter(!is.na(normal))
+
+annotations <- left_join(annotations, dplyr::select(annot_dat1, -c("Sample", "Group")), by = "Patient_No") %>%
+  left_join(dplyr::select(annotation2, "Patient_No", "clusterTANM")) %>%
+  arrange(normal)
+  
+oridata2 <- dplyr::select(oridata1, "Protein", annotations$normal) %>%
+  column_to_rownames(var = "Protein")
+oridata2 <- filter(oridata2, rowSums(!is.na(oridata2)) / ncol(oridata2) > 0.8)
+subtractor <- apply(oridata2[,-1], 1, median, na.rm = TRUE)
+oridata2 <- oridata2 - subtractor
+oridata2 <- as.matrix(oridata2) 
+
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation('cluster normal' = annotations$clusterTANM,
+                      'cluster Tumor' = annotations$clustertest, 
+                      TTR = annotations$daystoevent, 
+                      sex = annotations$Sex, 
+                      Radiotherapy = annotations$Radiotherapy,
+                      ducttype = annotations$Duct.Type,
+                      stage = annotations$Tumor.Stage,
+                   col = list('cluster normal' = c("cluster1" = "forestgreen", "cluster2" = "purple"),
+                              'cluster Tumor' = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2"), 
+                              TTR = colorRamp2(c(0, 1300, 2300), c("red", "yellow", "green")),
+                              sex = c("M" = "blue", "F" = "pink"),
+                              Radiotherapy = c("Yes" = "red", "No" = "gray95"),
+                              stage = c("T1" = "#FFF0F0", 
+                                        "T2" = "#F14C4C", 
+                                        "T3" = "#B30F0F", "T4" = "#9b0303")), 
+                   na_col = "white",
+                   annotation_label = c("TANM-cluster", "Tumor Cluster", "TTR (days)", "Sex", "Radiotherapy", 
+                                        "Duct Type", "AJCC Tumor Stage"),
+                   annotation_legend_param = list('cluster normal' = list(title_position = "lefttop-rot"),
+                                                  'cluster Tumor' = list(title_position = "lefttop-rot"),
+                                                  Radiotherapy = list(title_position = "lefttop-rot"),
+                                                  sex = list(title_position = "lefttop-rot"),
+                                                  ducttype = list(title_position = "lefttop-rot"),
+                                                  stage = list(title_position = "lefttop-rot"),
+                                                  TTR = list(title_position = "lefttop-rot")))
+
+ht <- Heatmap(oridata2, name = "∆ log2 LFQ", column_title = "Samples", row_title = "Proteins", 
+        show_row_names = FALSE, show_column_names = FALSE,
+        show_row_dend = FALSE,
+        cluster_columns = my_hclust_t,
+        bottom_annotation = ha,
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+
+tiff("results_4B_humancohort_TAMN_unsupervisedStats/Heatmap.tiff", units = "in", width = 12, height = 10, res = 300, pointsize =(12*100/72))
+ht
+dev.off()
+```
