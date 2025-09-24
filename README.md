@@ -95,4 +95,4 @@ Charts and Tables *(Filter by Collection = metadata; also provided as supplement
 
 ## Notes
 
-The classifier model is not included in this repository as it is being prepared for a separate publication. It will be made publicly available before the final acceptance of this manuscript.
+The classifier model is not included in this repository as it is being prepared for a separate publication.
