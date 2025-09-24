@@ -17,21 +17,28 @@ library(mixOmics)
 library(devtools)
 library(diann)
 library(readxl)
+library(limma)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(smplot2)
+library(survival)
+library(survminer)
+library(ggrepel)
 `%notin%` <- Negate(`%in%`)
 ```
 
 ```{r}
 #load data
-dataraw <- diann_load("Data/ICC_humancohort_semi-specific_DIA-NNoutput.tsv") %>%
-  filter(Proteotypic == 1)
+dataraw <- diann_load("1B.DIA-NN_semispec/reannotate/ICC_semispec_TimsTOF_Tobiworkflow_reannot.tsv") #%>%
+  #filter(Proteotypic == 1)
 
 #remove filepath from File.Name
 dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".*\\\\", ""))
 dataraw <- mutate(dataraw, File.Name = str_replace(dataraw[[1]], ".raw.mzml$", ""))
 
 #extract MQ-LFQ data from file - Genes.MQLFQ is already normalized via DIA-NN!
-precursors_orig <- diann_matrix(dataraw, pg.q = 0.01)
-write.csv(precursors_orig, "Data/semi-specific_precursors_raw.csv")
+precursors_orig <- diann_matrix(dataraw, pg.q = 0.01, proteotypic.only = TRUE)
+write.csv(precursors_orig, "results_7_humancohort_semi-specificAnalysis/semi-specific_precursors_raw.csv")
 
 # match identified sequences to proteins
 sequences <- unique(dplyr::select(dataraw, "Stripped.Sequence", "Precursor.Id", "Protein.Group"))
@@ -40,25 +47,38 @@ precursors <- rownames_to_column(as.data.frame(precursors_orig), var = "Precurso
             right_join(sequences, by = "Precursor.Id") %>%
             dplyr::select("Stripped.Sequence", "Precursor.Id", "Protein.Group", contains("KB"))
 
-write.csv(precursors, "Data/semi-specific_precursors_sequence+ID+Abundance.csv")
+colnames_data <- colnames(precursors) %>%
+  str_remove("(?<=_).+") %>%
+  str_remove("_") %>%
+  str_remove("B$")
+colnames(precursors) <- colnames_data
+
+write.csv(precursors, "results_7_humancohort_semi-specificAnalysis/semi-specific_precursors_sequence+ID+Abundance.csv")
 ```
 
 # Load matrix and annotation
 ```{r, echo=FALSE, message=FALSE, include=FALSE}
-sequences <- read.csv("Data/semi-specific_precursors_sequence+ID+Abundance.csv")  %>%
-  dplyr::select(-c(KB42, KB147, KB53, KB213, KB215, KB55, KB23, KB209))
+sequences <- precursors  
 sequences$Protein.Group <- str_split_fixed(sequences$Protein.Group, " ", n = Inf)
 sequences$Protein.Group  <- sequences$Protein.Group[,1]
 
 annot <- read_excel("Data/Table S1 - Patient Table.xlsx", na = "NA") %>%
-              dplyr::rename(Sample = 'Sample ID') %>%
-              filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+              filter(Sample %notin% c("KB107", "KB167", "KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
               arrange(Sample)
+
+annot_newclust <- read.csv("results_4_humancohort_tumor_unsupervisedStats/annotation_cluster_k=2.csv") %>%
+  filter(Sample %notin% c("KB107", "KB167", "KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  arrange(Sample)
+
+annot <- dplyr::select(annot, -cluster) %>%
+  left_join(dplyr::select(annot_newclust, "clustertest", "Sample")) %>%
+  dplyr::rename(cluster = "clustertest")
 
 fasta_human <- read.fasta("data/Human-EBI-reference_one-protein-per-gene_20200109_iRTs.fasta", as.string = TRUE, seqtype = "AA")
 
-fullytrypticcohort <- read_excel("Data/Table S5 - ICC_proteomic_data_after_batch_correction.xlsx", na = "NA") %>%
-  dplyr::rename(ID = `...1`)
+fullytrypticcohort <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv") %>%
+  dplyr::select(-X) %>%
+  dplyr::select("Protein", annot$Sample)
 ```
 
 ```{r,echo=FALSE, message=FALSE, include=FALSE}
@@ -73,20 +93,24 @@ pept_2_protein <- sequences %>%
 
 # Annotate peptides as fully- or semi-tryptic
 ```{r,echo=FALSE, message=FALSE, include=FALSE}
-cleavage_annotated_peptides <- annotate_peptides(peptide2protein = pept_2_protein, 
-                                                       fasta = fasta_human,
-                                                       decoy_tag = "rev_")
+# activate if needed or running for first time
+
+# cleavage_annotated_peptides <- annotate_peptides(peptide2protein = pept_2_protein, 
+#                                                        fasta = fasta_human,
+#                                                        decoy_tag = "rev_")
+# saveRDS(cleavage_annotated_peptides, file = "results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
 ```
 
-```{r, echo=FALSE, message=FALSE, include=FALSE}
 # filter semi-spec peptides from all identified peptides
+```{r, echo=FALSE, message=FALSE, include=FALSE}
+cleavage_annotated_peptides <- read_rds("results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
+
 semispec_sequences <- filter(cleavage_annotated_peptides,
                              specificity == "semi_specific" & is_terminal == "not_terminal")
 write.csv(semispec_sequences, "semi-spec_sequences.csv")
 
-semi_data <- filter(sequences, Stripped.Sequence %in% semispec_sequences$Peptide) %>%
-  dplyr::select(-X)
-write.csv(semi_data, "semi-spec_data.csv")
+semi_data <- filter(sequences, Stripped.Sequence %in% semispec_sequences$Peptide) 
+write.csv(semi_data, "results_7_humancohort_semi-specificAnalysis/semi-spec_data.csv")
 ```
 
 ```{r, echo=FALSE, message=FALSE}
@@ -97,12 +121,20 @@ cleavage_annotated_peptides <- mutate(cleavage_annotated_peptides,
                                      "semi-specific", "specific")) %>%
   filter(!is.na(specific))
 
-ggplot(cleavage_annotated_peptides, aes(x = specific)) +
+plot1 <- ggplot(cleavage_annotated_peptides, aes(x = specific)) +
   geom_bar() +
   xlab("") +
   ylab("Peptide Count") +
-  theme_minimal() +
-  labs(title = "ICC", subtitle = "semi-specific analysis")
+  theme_classic() 
+  #labs(title = "ICC", subtitle = "semi-specific analysis")
+plot1
+
+overview <- as.data.frame(table(cleavage_annotated_peptides$specific)) %>%
+  mutate(totalpep = sum(Freq)) %>%
+  mutate(percent = Freq / totalpep * 100)
+
+ggsave("results_7_humancohort_semi-specificAnalysis/semi_identifications.pdf", plot = plot1, width = 67, height = 55, 
+       units = "mm", dpi = 300, scale = 2)
 
 semi_data_raw <- filter(sequences, Stripped.Sequence %in% semispec_sequences$Peptide)
   
@@ -111,13 +143,13 @@ semi_percent <- data.frame(total = colSums(dplyr::select(sequences, contains("KB
   rownames_to_column(var = "Sample") %>%
   mutate(semi = colSums(dplyr::select(semi_data_raw, contains("KB")), na.rm = TRUE)) %>%
   mutate(percent = (semi / total)*100) %>%
-  left_join(dplyr::select(annot, "Sample", "Tissue"), by = "Sample") 
+  left_join(dplyr::select(annot, "Sample", "Group"), by = "Sample") 
 ```
 
 ```{r, echo=FALSE, message=FALSE}
 annot_select <- dplyr::select(annot, "Sample", "cluster")
-annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Tissue") %>%
-  pivot_wider(names_from = "Tissue", values_from = "Sample") %>%
+annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Group") %>%
+  pivot_wider(names_from = "Group", values_from = "Sample") %>%
   dplyr::rename(Sample = "Tumor") %>%
   left_join(annot_select, by = "Sample") %>%
   pivot_longer(cols = c("Sample", "normal"), names_to = "bla", values_to = "Sample") %>%
@@ -125,30 +157,233 @@ annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Tissue") %>%
   filter(!is.na(cluster)) %>%
   left_join(semi_percent, by = "Sample")
 
-annot_plot$Tissue <- str_replace_all(annot_plot$Tissue, "normal", "TANM")
+annot_plot$Group <- str_replace_all(annot_plot$Group, "normal", "TANM")
 
-ggplot(annot_plot, aes(x = Tissue, y = percent, color = Tissue)) +
+plot2 <- ggplot(annot_plot, aes(x = Group, y = percent, color = Group)) +
   geom_boxplot(outlier.shape = NA) +
   scale_color_manual(breaks = c("Tumor", "TANM"),
-                     values = c("red", "blue")) +
+                     values = c("#A52A2A", "#4682B4")) +
   geom_jitter(alpha = 0.3) +
   stat_compare_means(comparisons = list(c("TANM", "Tumor")), method = "wilcox.test", label = "p.format") +
-  labs(title = "Proteolytic Activity") +
+  #labs(title = "Proteolytic Activity") +
   xlab("") +
   ylab("LFQ semi-specific peptides / all peptides [%]") +
   theme_minimal() +
+  theme(legend.position = "none") +
   facet_grid(~ cluster)
+plot2
+
+ggsave("results_7_humancohort_semi-specificAnalysis/semi_boxplots.pdf", plot = plot2, width = 76, height = 49, 
+       units = "mm", dpi = 300, scale = 2)
+```
+
+# Match clinical Data to Fraction of semi-spec peptides
+```{r}
+annot_dat_tucell <- read.csv("Data/tumor_cell_content.csv") %>%
+  dplyr::rename(`Liver Cells %` = "Liver.Cells..") %>%
+  dplyr::rename(`Immune Cells %` = "Immune.Cells..") %>%
+  dplyr::rename(`Necrotic Cells %` = "Necrotic.Cells..") %>%
+  dplyr::rename(`Stromal Cells %` = "Stromal.Cells..") %>%
+  dplyr::rename(`ICC Tumor Cells %` = "ICC.Tumor.Cells..")
+
+annot_complete <- dplyr::select(annot_plot, "Sample", "total", "semi", "percent") %>%
+  left_join(annot, by = "Sample") %>%
+  left_join(dplyr::select(annot_dat_tucell, "Sample", "Liver Cells %", "Immune Cells %", "Necrotic Cells %", 
+                          "Stromal Cells %", "ICC Tumor Cells %"), by = "Sample") %>%
+  mutate(Group = str_replace(Group, "normal", "TANM"))
+
+ggplot(annot_complete, aes(x = Sex, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("Tumor", "TANM")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = Ethnicity, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = PSC, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("YES", "NO")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = `Hep B/C`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = `Tumor Stage`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = Radiotherapy, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = Lymphangioinvasion, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = `Satellite Nodules`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = `Liver Capsule Invasion`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = `Portal Spread`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = as.character(`Overall Tumor Budding`), y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = as.character(`intratumoral Tumor Budding`), y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = as.character(`peritumoral Tumor Budding`), y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(method = "anova", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, !is.na(`Duct Type`)), 
+       aes(x = `Duct Type`, y = percent, fill = Group)) +
+  geom_boxplot() +
+  scale_fill_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  stat_compare_means(comparisons = list(c("LDT", "SDT")), method = "t.test", label = "p.format") +
+  theme_classic() +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = percent, y = `Age (years)`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(annot_complete, aes(x = percent, y = `Age (years)`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, Group == "Tumor"), aes(x = percent, y = `Liver Cells %`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, Group == "Tumor"), aes(x = percent, y = `Immune Cells %`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, Group == "Tumor"), aes(x = percent, y = `Necrotic Cells %`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, Group == "Tumor"), aes(x = percent, y = `Stromal Cells %`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+ggplot(filter(annot_complete, Group == "Tumor"), aes(x = percent, y = `ICC Tumor Cells %`, color = Group)) +
+  geom_point() +
+  sm_statCorr(corr_method = "pearson") +
+  theme_classic() +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("#A52A2A", "#4682B4")) +
+  facet_wrap(~ Group)
+
+# Survival
+annotu <- filter(annot_complete, Group == "Tumor")
+surv_obj_cox <- Surv(time = annotu$daystoevent, event = annotu$censored)
+fit.coxph_cox <- coxph(surv_obj_cox ~ percent, data = annotu)
+plot_overview <- survminer::ggforest(fit.coxph_cox, data = annotu, main = "Tumor")
+print(plot_overview)
+
+annotanm <- filter(annot_complete, Group == "TANM")
+surv_obj_cox <- Surv(time = annotanm$daystoevent, event = annotanm$censored)
+fit.coxph_cox <- coxph(surv_obj_cox ~ percent, data = annotanm)
+plot_overview <- survminer::ggforest(fit.coxph_cox, data = annotanm, main = "TANM")
+print(plot_overview)
 ```
 
 ```{r}
 semi_spec_data <- dplyr::select(semi_data, "Stripped.Sequence", "Precursor.Id", "Protein.Group", one_of(annot$Sample))
-semi_spec_data$Stripped.Sequence <- str_c(semi_spec_data$Stripped.Sequence, 
+semi_spec_data$Precursor.Id <- str_c(semi_spec_data$Precursor.Id, 
                                           semi_spec_data$Protein.Group, sep = "_")
-semi_spec_data <- dplyr::select(semi_spec_data, -c(Precursor.Id, Protein.Group)) %>%
-  dplyr::rename(ID = "Stripped.Sequence") 
+semi_spec_data <- dplyr::select(semi_spec_data, -c(Stripped.Sequence, Protein.Group)) %>%
+  dplyr::rename(ID = "Precursor.Id") 
 
 annotation1 <- filter(annot_plot, Sample %in% colnames(semi_spec_data)) %>%
-  mutate(Group = str_c(Tissue, " ", cluster)) %>%
+  mutate(Group = str_c(Group, " ", cluster)) %>%
   group_by(Patient_No) %>%
   filter(n() > 1) %>%
   ungroup()
@@ -163,149 +398,22 @@ semi_spec_data <- mutate(semi_spec_data,
   dplyr::select("ID", annotation1$Sample)
 ```
 
-```{r}
-## Required functions -----
-na_filter <- function(data, max_na_per_group, logtrans, minInt_inpute, fraction_Inpute = 5){
-      
-data_long <- pivot_longer(data = data,
-                             cols = matches("KB"),
-                             values_to = "Intensity",
-                             names_to = "Sample") 
-data_long <- left_join(data_long, annotation1, by = "Sample")
-
-if (logtrans){
-       data_long <- mutate(data_long,
-                           Intensity = log2(Intensity))
-}
-
-na_count <- group_by(data_long,
-                     ID, Group) %>%
-      summarise(na_count = sum(is.na(Intensity)),
-                total = n()) %>% 
-      ungroup() %>% 
-      mutate(NA_fraction = na_count/total)
-
-nafraction <- group_by(na_count,
-                           ID) %>%
-      summarise(max_nafraction = max(NA_fraction),
-                min_nafraction = min(NA_fraction)) %>%
-      ungroup()
-
-included_prots <- dplyr::filter(nafraction,
-                                max_nafraction <= max_na_per_group)
-
-
-
-if (minInt_inpute){
-  
-  min_intensityprot <- data_long %>% 
-  group_by(ID) %>% 
-  mutate(min_int = min(Intensity, na.rm = TRUE)) %>%
-  mutate(th_of_min_int = min_int/fraction_Inpute)
-  
-  data_long_nonas1 <- min_intensityprot %>% 
-  mutate(Intensity = ifelse(is.na(Intensity),
-                            yes = th_of_min_int,
-                            no = Intensity),
-         `Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
-  dplyr::select(ID, `Group-Sample`, Intensity) %>%
-  dplyr::filter(ID %in% included_prots$ID)
-
-  data_maxperc_nas <- pivot_wider(data_long_nonas1,
-                                  names_from = `Group-Sample`,
-                                  values_from = Intensity)
-} else {
-  data_long_nonas1 <- filter(data_long,
-                           ID %in% included_prots$ID) %>% 
-      mutate(`Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
-      dplyr::select(ID, `Group-Sample`, Intensity)
-  
-  data_maxperc_nas <- pivot_wider(data_long_nonas1,
-                       names_from = `Group-Sample`,
-                       values_from = Intensity)
-}
-}
-
-## Function to get the proteins by their maximal contribution ----
-
-getbycontribution <- function(data, splsda_model){
-          
-          n_comps <- splsda_model$ncomp
-          
-          prots_complist <- list()
-          
-          for (i in 1:n_comps){
-                    prots_complist[[i]] <- selectVar(splsda_model, comp = i)$value %>% 
-                              mutate(protein_id = row.names(.), comp = paste0("comp",i))
-          }
-          
-          prots_percomp <- do.call(bind_rows, prots_complist)
-          
-          data_long <- pivot_longer(data = data,
-                                    cols = matches("^S"),
-                                    values_to = "Intensity",
-                                    names_to = c("Group-Sample"))
-          
-          int_per_group <- separate(data_long, 
-                                    col = `Group-Sample`, 
-                                    sep = "-",
-                                    into = c("Group", "Sample")) %>% 
-                    group_by(ID, Group) %>% 
-                    summarise(median_Int = median(Intensity),
-                              mean_Int = mean(Intensity)) %>% 
-                    filter(ID %in% prots_percomp$protein_id)
-          
-          proteins_group <- int_per_group %>%
-                    ungroup() %>%
-                    group_by(ID) %>%
-                    filter(mean_Int == max(mean_Int)) %>% 
-                    mutate(duplicated = duplicated(ID)) %>%
-                    ungroup() %>% 
-                    arrange(Group)
-          
-          return(proteins_group)
-}
-```
 
 ```{r}
-data_nonaimpaft <- na_filter(data = semi_spec_data,
-                                max_na_per_group = 0.50,
-                                logtrans = FALSE,
-                                minInt_inpute = FALSE, 
-                                fraction_Inpute = 1)
-
-sample_nonaimpaft <- colnames(data_nonaimpaft)[-1]
-
-### Prep expression matrix and transpose-----
-tomat_noNAimpaft <-  data_nonaimpaft[,-1]
-
-protein_idsimpaft <- data_nonaimpaft$ID
-
-mat_noNAimpaft <- as.matrix(tomat_noNAimpaft)
-row.names(mat_noNAimpaft) <- protein_idsimpaft
-colnames(mat_noNAimpaft) <- sample_nonaimpaft
-
-t_mat_nonaimpaft <- t(mat_noNAimpaft) 
-
-### Log-2 transformation and median normalization  ----
-
-data_1st_log2_med_noraft <- median_normalization(mat_noNAimpaft)
-t_data_1st_log2_med_normaft <- t(data_1st_log2_med_noraft)
-
-data_1st_log2_med_noraftid <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "Protein")
-data_1st_log2_med_noraftid1 <- rownames_to_column(as.data.frame(data_1st_log2_med_noraft), "ID")
-
+semi_spec_data_forinput <- column_to_rownames(semi_spec_data, var = "ID") %>%
+  filter(rowSums(!is.na(.)) / ncol(.) >= 0.8) %>%
+  t()
 
 ### Random forest missing value imputation ----
 
-if(!file.exists("results/imputfr_aft_semi.rds")){
+if(!file.exists("results_7_humancohort_semi-specificAnalysis/imputfr_aft_semi.rds")){
   set.seed(546)
   #tictoc::tic()
-  impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
+  impfr_2 <- missForest(semi_spec_data_forinput) # this takes ~ 3 minutes to compute
   #tictoc::toc()
-  write_rds(impfr_2, file = "results/imputfr_aft_semi.rds")
+  write_rds(impfr_2, file = "results_7_humancohort_semi-specificAnalysis/imputfr_aft_semi.rds")
 } else {
-  impfr_2 <- read_rds(file = "results/imputfr_aft_semi.rds")
+  impfr_2 <- read_rds(file = "results_7_humancohort_semi-specificAnalysis/imputfr_aft_semi.rds")
 }
 
 t_data_1st_log2_med_normimpaft <- impfr_2$ximp
@@ -314,11 +422,585 @@ data_1st_log2_med_normimpaft <- t(t_data_1st_log2_med_normimpaft)
 ```
 
 ```{r fig.width=5, fig.height=4}
-res_plsdaf3 <- plsda(t_data_1st_log2_med_normimpaft, predictors1, 
+res_plsdaf3 <- mixOmics::plsda(t_data_1st_log2_med_normimpaft, predictors1, 
                    ncomp = 10)  # set ncomp to 10 for performance assessment later
 
 plotIndiv(res_plsdaf3 , comp = 1:2,
           group = predictors1, ind.names = FALSE, 
           ellipse = TRUE, legend = TRUE, title = 'PLSDA results',
           col.per.group = c("lightgrey", "darkgrey", "cornflowerblue", "orange"))
+
+plsda <- plotIndiv(res_plsdaf3, ind.names = FALSE)
+plsda_df <- plsda$df %>%
+  rownames_to_column(var = "Sample") %>%
+  inner_join(annot, by = "Sample") %>%
+  dplyr::rename(Tissue = "group")
+
+plot3 <- ggplot(plsda_df, aes(x, y, color = Tissue)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab(plsda$graph$labels$x) +
+  ylab(plsda$graph$labels$y) +
+  scale_color_manual(values = c("lightgrey", "darkgrey", "cornflowerblue", "orange"),
+                     breaks = c("TANM cluster1", "TANM cluster2", "Tumor cluster1", "Tumor cluster2")) +
+  stat_ellipse()
+plot3
+
+ggsave("results_7_humancohort_semi-specificAnalysis/PLSDA_Tu-TANM.pdf", plot = plot3, width = 116, height = 62, 
+       units = "mm", dpi = 300, scale = 2)
 ```   
+
+
+```{r}
+duplicates <- dplyr::select(semi_data, "Stripped.Sequence", "Precursor.Id", "Protein.Group") %>%
+  mutate(duplicate = ifelse(duplicated(semi_data$Stripped.Sequence) == TRUE, TRUE, FALSE)) %>%
+  mutate(ChargeState = str_extract(Precursor.Id, "[:digit:]")) %>%
+  filter(!(ChargeState != 2 & duplicate == TRUE)) %>%
+  filter((ChargeState >= 2 & duplicate == FALSE) | (ChargeState == 2 & duplicate == TRUE))
+
+expr_dat_orig <- filter(semi_data, Precursor.Id %in% duplicates$Precursor.Id)
+                                                
+expr_dat <- dplyr::select(expr_dat_orig, "Stripped.Sequence", annot$Sample) %>%
+  filter(rowSums(!is.na(expr_dat_orig)) / (ncol(expr_dat_orig)-1) > 0.7) %>%
+  dplyr::rename(ID = "Stripped.Sequence") %>%
+  mutate_if(is.numeric, function(x, na.rm = TRUE) log2(x)) %>%
+  mutate_if(is.numeric, function(x, na.rm = TRUE) x - median(x, na.rm = TRUE))
+
+groups <- as.factor(annot$Group)
+
+design <- model.matrix(~0+groups)
+
+row.names(design) <- annot$Sample
+
+colnames(design) <- colnames(design) %>% str_remove(., "groups") %>% str_trim()
+
+# 3. DEFINE WHICH GROUPS YOU WISH TO COMPARE ----
+
+contrast.matrix <- makeContrasts(Tumor - normal, levels=design) # MODIFY THIS LINE
+
+## Prep expression data matrix ----
+n_contrasts <- dim(contrast.matrix)[2]
+
+tomat <- dplyr::select(expr_dat,
+                       -ID, row.names(design)) %>% as.data.frame()
+
+row.names(tomat) <- expr_dat$ID
+
+mat <- as.matrix(tomat)
+
+## Execute the linear model / limma ----
+
+fit <- lmFit(mat, design = design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+fit2 <- eBayes(fit2)
+
+output_limma2 <- topTable(fit2, adjust.method = "BH", number = Inf)
+
+output_limma2$Protein <- row.names(output_limma2)
+
+
+## Generate output ----
+
+## output tabular list ----
+
+list_tabular <- list()
+
+for (i in 1:n_contrasts){
+          
+          outlim <- topTable(fit2, coef = i, adjust.method = "BH", number = Inf)
+          outlim$Protein <- row.names(outlim)
+          outlim$Contrast <- colnames(contrast.matrix)[i]
+          list_tabular[[i]] <- outlim
+}
+
+names(list_tabular) <- colnames(contrast.matrix)
+
+if(!dir.exists("Output")){dir.create("Output")}
+
+write.table(output_limma2,
+            file = "results_7_humancohort_semi-specificAnalysis/tab_output_general_Ftest_limma_Tissues.txt",
+            row.names = FALSE, col.names = TRUE)
+
+sig_hits <- dplyr::filter(output_limma2, 
+                               adj.P.Val <= 0.05) %>% row.names(.)
+
+n_significant <- length(sig_hits)
+
+top_n_hits <- slice_min(output_limma2, n = 15, order_by = adj.P.Val, with_ties = FALSE)
+
+
+## Extract basic information about each contrasts ----
+
+getinfo <- function(x){
+          x %>% dplyr::filter(adj.P.Val <= 0.05) %>% dim(.) %>% .[1]
+}
+
+
+## Prep some boxplots for the top proteins with lowest P-values ----
+
+slim_expr <- pivot_longer(expr_dat, cols = colnames(mat),
+                          names_to = "Sample",
+                          values_to = "Abundance") 
+
+slim_expr_g <- left_join(slim_expr, annot,
+                         by = "Sample")
+
+hits_expr <- filter(slim_expr_g, ID %in% row.names(top_n_hits)) %>%
+              dplyr::rename(Protein = "ID") %>%
+              mutate(Entry = str_sub(Protein, start = 1, end = 6))
+
+
+boxplots <- ggplot(hits_expr,
+                   aes(x = Group, y = Abundance)) +
+          geom_boxplot()+
+          facet_wrap(Entry ~ .) 
+
+plot(boxplots)
+## Prep volcano plots for contrasts ----
+
+merged_limmacontr <- reshape::merge_all(list_tabular)
+
+write.table(merged_limmacontr,
+            file = "results_7_humancohort_semi-specificAnalysis/tab_output_per_contrasts_limm_Tissuesa.txt",
+            row.names = FALSE, col.names = TRUE)
+
+tovolc <- merged_limmacontr %>% 
+          rownames_to_column(var = "Peptide") %>%
+          mutate(Differentially_expressed = case_when(adj.P.Val <= 0.05 ~ TRUE, TRUE ~ FALSE)) %>%
+          left_join(dplyr::select(semispec_sequences, "Peptide", "protein_id"), by = "Peptide") %>%
+  dplyr::select(-Protein) %>%
+  dplyr::rename(Protein = "protein_id")
+
+hupo <- read.delim("Data/uniprot-proteome UP000005640+reviewed yes.tab") %>%
+  dplyr::rename(Protein = "Entry")
+hupo$Gene.names <- str_split_fixed(hupo$Gene.names, " ", n= Inf)
+hupo$Gene.names <- hupo$Gene.names[,1]
+
+tovolc <- left_join(tovolc, hupo, by = "Protein")
+
+write.csv(tovolc, "results_7_humancohort_semi-specificAnalysis/volcano_hits_Tissues.csv")
+
+#volcanoplot 
+volcanoes <- ggplot(data = tovolc, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(data = filter(tovolc, adj.P.Val > 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "black") +
+  geom_point(data = filter(tovolc, logFC > 0, adj.P.Val <= 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "red", alpha = 0.6) +
+  geom_point(data = filter(tovolc, logFC < 0, adj.P.Val <= 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "cadetblue", alpha = 1) +
+  theme_classic() +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  # geom_text_repel(aes(label = ifelse(-log10(adj.P.Val) >= 18 & logFC > 0, as.character(Gene.names),'')),
+  #                   size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  # geom_text_repel(aes(label = ifelse(-log10(adj.P.Val) >= 25 & logFC < 0, as.character(Gene.names),'')),
+  #                 size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  labs(title = "Semi-tryptic Analysis", subtitle = "Limma comparison Tumor vs. TANM")
+
+print(volcanoes)
+
+tiff("results_7_humancohort_semi-specificAnalysis/volcano_Tissues.tiff", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+print(volcanoes)
+dev.off()
+
+png("results_7_humancohort_semi-specificAnalysis/volcano_Tissues.png", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+print(volcanoes)
+dev.off()
+
+geneList <- tovolc$logFC
+names(geneList) = as.character(tovolc$Protein)
+geneList = sort(geneList, decreasing = TRUE)
+
+gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
+# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
+#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+# saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
+
+ridgeplot <- ridgeplot(gse, label_format = 20) + 
+  theme(axis.text.y = element_text(size = 6)) + 
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+  labs(x = "log2-fold change", title = "Ontology: Biological Processes")
+ridgeplot
+
+tiff("results_7_humancohort_semi-specificAnalysis/ridgeplot_TumorTANM.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*100/72))
+ridgeplot
+dev.off()
+
+plot <- gse@result 
+plot1data <- slice_max(gse@result, enrichmentScore, n = 10) %>%
+  bind_rows(slice_min(gse@result, enrichmentScore, n = 10)) %>%
+  mutate(Description = str_wrap(Description, width = 50))
+
+plot1 <- ggplot(plot1data, aes(x = enrichmentScore, y = reorder(Description, enrichmentScore), size = setSize, color = p.adjust)) +
+  geom_segment(aes(x = 0, xend = enrichmentScore, 
+                   y = reorder(Description, enrichmentScore), yend = reorder(Description, enrichmentScore)),
+               color = "grey", linewidth = 0.2) +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.y= element_text(size = 8)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  geom_vline(xintercept = 0) +
+  ylab("")
+plot1
+
+tiff("results_7_humancohort_semi-specificAnalysis/dotplot_TumorTANM.tiff", units = "in", width = 10, height = 4, res = 300, pointsize =(8*100/72))
+plot1
+dev.off()
+
+png("results_7_humancohort_semi-specificAnalysis/dotplot_TumorTANM.png", units = "in", width = 10, height = 4, res = 300, pointsize =(8*100/72))
+plot1
+dev.off()
+```
+
+```{r}
+tovolc_fulltryp <- read.csv("results_3_humancohort_Tumor-TANM/Limmaresult_inclUNIPROTannotation.csv")
+
+corr <- dplyr::select(tovolc, "Peptide", "logFC", "adj.P.Val", "Protein", "Gene.names", "Protein.names") %>%
+  dplyr::rename(logFCsemi = "logFC") %>%
+  dplyr::rename(adj.P.Valsemi = "adj.P.Val") %>%
+  left_join(dplyr::select(tovolc_fulltryp, "Protein", "logFC", "adj.P.Val"), by = "Protein") %>%
+  dplyr::rename(logFCfull = "logFC") %>%
+  dplyr::rename(adj.P.Valfull = "adj.P.Val") %>%
+  mutate(`p protein level` = ifelse(adj.P.Valfull > 0.05, "n.s.", "p < 0.05"))
+
+corrplot <- ggplot(corr, aes(x = logFCfull, y = logFCsemi, color = `p protein level`)) +
+  geom_point() +
+  # xlim(-2, 3) +
+  # ylim(-2, 3) +
+  geom_text_repel(aes(label = ifelse((logFCsemi - logFCfull >= 3 | logFCsemi - logFCfull <= -3) & 
+                                       `p protein level` == "p < 0.05",
+                                     as.character(Gene.names),'')),
+                  size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  scale_color_manual(values = c("black", "grey"),
+                     breaks = c("p < 0.05", "n.s.")) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_classic()+
+  theme(legend.position = "none") +
+  # labs(title = "cluster1 vs. cluster2", subtitle = paste("Pearson correlation = ", round(Pearson$estimate, digits = 2))) +
+  xlab("logFC protein level") +
+  ylab("logFC semi-tryptic peptides")
+corrplot
+
+ggsave("results_7_humancohort_semi-specificAnalysis/corrplot_Tissues.pdf", plot = corrplot, width = 116, height = 62, 
+       units = "mm", dpi = 300, scale = 2)
+
+tiff("results_7_humancohort_semi-specificAnalysis/corrplot_Tissues.tiff", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+corrplot
+dev.off()
+```
+
+### Comparison Cluster
+```{r}
+annot_tumor <- read.csv("results_4_humancohort_tumor_unsupervisedStats/annotation_cluster_k=2.csv")
+
+expr_dat <- dplyr::select(expr_dat_orig, "Stripped.Sequence", annot_tumor$Sample) %>%
+  filter(rowSums(!is.na(expr_dat_orig)) / (ncol(expr_dat_orig)-1) > 0.7) %>%
+  dplyr::rename(ID = "Stripped.Sequence") %>%
+  mutate_if(is.numeric, function(x, na.rm = TRUE) log2(x)) %>%
+  mutate_if(is.numeric, function(x, na.rm = TRUE) x - median(x, na.rm = TRUE))
+
+groups <- as.factor(annot_tumor$clustertest)
+
+design <- model.matrix(~0+groups)
+
+row.names(design) <- annot_tumor$Sample
+
+colnames(design) <- colnames(design) %>% str_remove(., "groups") %>% str_trim()
+
+# 3. DEFINE WHICH GROUPS YOU WISH TO COMPARE ----
+
+contrast.matrix <- makeContrasts(cluster2 - cluster1, levels=design) # MODIFY THIS LINE
+
+## Prep expression data matrix ----
+n_contrasts <- dim(contrast.matrix)[2]
+
+tomat <- dplyr::select(expr_dat,
+                       -ID, row.names(design)) %>% as.data.frame()
+
+row.names(tomat) <- expr_dat$ID
+
+mat <- as.matrix(tomat)
+
+## Execute the linear model / limma ----
+
+fit <- lmFit(mat, design = design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+
+fit2 <- eBayes(fit2)
+
+output_limma2 <- topTable(fit2, adjust.method = "BH", number = Inf)
+
+output_limma2$Protein <- row.names(output_limma2)
+
+
+## Generate output ----
+
+## output tabular list ----
+
+list_tabular <- list()
+
+for (i in 1:n_contrasts){
+          
+          outlim <- topTable(fit2, coef = i, adjust.method = "BH", number = Inf)
+          outlim$Protein <- row.names(outlim)
+          outlim$Contrast <- colnames(contrast.matrix)[i]
+          list_tabular[[i]] <- outlim
+}
+
+names(list_tabular) <- colnames(contrast.matrix)
+
+if(!dir.exists("Output")){dir.create("Output")}
+
+write.table(output_limma2,
+            file = "results_7_humancohort_semi-specificAnalysis/tab_output_general_Ftest_limma_clusters.txt",
+            row.names = FALSE, col.names = TRUE)
+
+sig_hits <- dplyr::filter(output_limma2, 
+                               adj.P.Val <= 0.05) %>% row.names(.)
+
+n_significant <- length(sig_hits)
+
+top_n_hits <- slice_min(output_limma2, n = 15, order_by = adj.P.Val, with_ties = FALSE)
+
+
+## Extract basic information about each contrasts ----
+
+getinfo <- function(x){
+          x %>% dplyr::filter(adj.P.Val <= 0.05) %>% dim(.) %>% .[1]
+}
+
+
+## Prep some boxplots for the top proteins with lowest P-values ----
+
+slim_expr <- pivot_longer(expr_dat, cols = colnames(mat),
+                          names_to = "Sample",
+                          values_to = "Abundance") 
+
+slim_expr_g <- left_join(slim_expr, annot_tumor,
+                         by = "Sample")
+
+hits_expr <- filter(slim_expr_g, ID %in% row.names(top_n_hits)) %>%
+              dplyr::rename(Protein = "ID") %>%
+              mutate(Entry = str_sub(Protein, start = 1, end = 6))
+
+
+boxplots <- ggplot(hits_expr,
+                   aes(x = clustertest, y = Abundance)) +
+          geom_boxplot()+
+          facet_wrap(Entry ~ .) 
+
+plot(boxplots)
+## Prep volcano plots for contrasts ----
+
+merged_limmacontr <- reshape::merge_all(list_tabular)
+
+write.table(merged_limmacontr,
+            file = "results_7_humancohort_semi-specificAnalysis/tab_output_per_contrasts_limma_clusters.txt",
+            row.names = FALSE, col.names = TRUE)
+
+tovolc <- merged_limmacontr %>% 
+          rownames_to_column(var = "Peptide") %>%
+          mutate(Differentially_expressed = case_when(adj.P.Val <= 0.05 ~ TRUE, TRUE ~ FALSE)) %>%
+          left_join(dplyr::select(semispec_sequences, "Peptide", "protein_id"), by = "Peptide") %>%
+  dplyr::select(-Protein) %>%
+  dplyr::rename(Protein = "protein_id")
+
+tovolc <- left_join(tovolc, hupo, by = "Protein")
+
+write.csv(tovolc, "results_7_humancohort_semi-specificAnalysis/volcano_hits_clusters.csv")
+
+#volcanoplot 
+volcanoes <- ggplot(data = tovolc, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(data = filter(tovolc, adj.P.Val > 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "black") +
+  geom_point(data = filter(tovolc, logFC > 0, adj.P.Val <= 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "orange", alpha = 0.6) +
+  geom_point(data = filter(tovolc, logFC < 0, adj.P.Val <= 0.05),
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "blue", alpha = 1) +
+  theme_classic() +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  # geom_text_repel(aes(label = ifelse(-log10(adj.P.Val) >= 18 & logFC > 0, as.character(Gene.names),'')),
+  #                   size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  # geom_text_repel(aes(label = ifelse(-log10(adj.P.Val) >= 25 & logFC < 0, as.character(Gene.names),'')),
+  #                 size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  labs(title = "Semi-tryptic Analysis", subtitle = "Limma comparison Tumor vs. TANM")
+
+print(volcanoes)
+
+tiff("results_7_humancohort_semi-specificAnalysis/volcano_clusters.tiff", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+print(volcanoes)
+dev.off()
+
+geneList <- tovolc$logFC
+names(geneList) = as.character(tovolc$Protein)
+geneList = sort(geneList, decreasing = TRUE)
+
+gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
+# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 50, maxGSSize = 500,
+#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+# saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
+
+ridgeplot <- ridgeplot(gse, label_format = 20) + 
+  theme(axis.text.y = element_text(size = 6)) + 
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+  labs(x = "log2-fold change", title = "Ontology: Biological Processes")
+ridgeplot
+
+tiff("results_7_humancohort_semi-specificAnalysis/ridgeplot_clusters.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*100/72))
+ridgeplot
+dev.off()
+
+plot <- gse@result 
+plot1data <- slice_max(gse@result, enrichmentScore, n = 10) %>%
+  bind_rows(slice_min(gse@result, enrichmentScore, n = 10)) %>%
+  mutate(Description = str_wrap(Description, width = 50))
+
+plot1 <- ggplot(plot1data, aes(x = enrichmentScore, y = reorder(Description, enrichmentScore), size = setSize, color = p.adjust)) +
+  geom_segment(aes(x = 0, xend = enrichmentScore, 
+                   y = reorder(Description, enrichmentScore), yend = reorder(Description, enrichmentScore)),
+               color = "grey", linewidth = 0.2) +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.y= element_text(size = 8)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  geom_vline(xintercept = 0) +
+  ylab("")
+plot1
+
+tiff("results_7_humancohort_semi-specificAnalysis/dotplot_clusters.tiff", units = "in", width = 10, height = 4, res = 300, pointsize =(8*100/72))
+plot1
+dev.off()
+
+png("results_7_humancohort_semi-specificAnalysis/dotplot_clusters.png", units = "in", width = 10, height = 4, res = 300, pointsize =(8*100/72))
+plot1
+dev.off()
+```
+
+```{r}
+tovolc_fulltryp <- read.csv("results_5_humancohort_ECM-TurnoverCluster/volcano_hits.csv")
+
+corr <- dplyr::select(tovolc, "Peptide", "logFC", "adj.P.Val", "Protein", "Gene.names", "Protein.names") %>%
+  dplyr::rename(logFCsemi = "logFC") %>%
+  dplyr::rename(adj.P.Valsemi = "adj.P.Val") %>%
+  left_join(dplyr::select(tovolc_fulltryp, "Protein", "logFC", "adj.P.Val"), by = "Protein") %>%
+  dplyr::rename(logFCfull = "logFC") %>%
+  dplyr::rename(adj.P.Valfull = "adj.P.Val") %>%
+  mutate(`p protein level` = ifelse(adj.P.Valfull > 0.05, "n.s.", "p < 0.05"))
+
+corrplot2 <- ggplot(corr, aes(x = logFCfull, y = logFCsemi, color = `p protein level`)) +
+  geom_point() +
+  # xlim(-2, 3) +
+  # ylim(-2, 3) +
+  geom_text_repel(aes(label = ifelse((logFCsemi - logFCfull >= 1 | logFCsemi - logFCfull <= -1) & 
+                                       `p protein level` == "p < 0.05",
+                                     as.character(Gene.names),'')),
+                  size = 3, max.overlaps = Inf, show.legend = FALSE) +
+  scale_color_manual(values = c("black", "grey"),
+                     breaks = c("p < 0.05", "n.s.")) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_classic()+
+  theme(legend.position = "none") +
+  # labs(title = "cluster1 vs. cluster2", subtitle = paste("Pearson correlation = ", round(Pearson$estimate, digits = 2))) +
+  xlab("logFC protein level") +
+  ylab("logFC semi-tryptic peptides")
+corrplot2
+
+ggsave("results_7_humancohort_semi-specificAnalysis/corrplot_clusters.pdf", plot = corrplot2, width = 116, height = 62, 
+       units = "mm", dpi = 300, scale = 2)
+```
+
+
+# DELETE FOR SUBMISSION
+
+# test only highly abundant peptides
+ 
+```{r}
+sequences_cut <- dplyr::select(sequences, contains("KB")) %>%
+  mutate(mean_intens = rowMeans(., na.rm = TRUE)) %>%
+  slice_max(order_by = mean_intens, n = round((nrow(.)*0.2), digits = 0))
+
+semi_percent <- data.frame(total = colSums(dplyr::select(sequences_cut, contains("KB")), na.rm = TRUE)) %>%
+  rownames_to_column(var = "Sample") %>%
+  mutate(semi = colSums(dplyr::select(semi_data_raw, contains("KB")), na.rm = TRUE)) %>%
+  mutate(percent = (semi / total)*100) %>%
+  left_join(dplyr::select(annot, "Sample", "Group"), by = "Sample")
+```
+
+```{r, echo=FALSE, message=FALSE}
+annot_select <- dplyr::select(annot, "Sample", "cluster")
+annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Group") %>%
+  pivot_wider(names_from = "Group", values_from = "Sample") %>%
+  dplyr::rename(Sample = "Tumor") %>%
+  left_join(annot_select, by = "Sample") %>%
+  pivot_longer(cols = c("Sample", "normal"), names_to = "bla", values_to = "Sample") %>%
+  filter(!is.na(Sample)) %>%
+  filter(!is.na(cluster)) %>%
+  left_join(semi_percent, by = "Sample")
+
+annot_plot$Group <- str_replace_all(annot_plot$Group, "normal", "TANM")
+
+ggplot(annot_plot, aes(x = Group, y = percent, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("Tumor", "TANM"),
+                     values = c("red", "blue")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("TANM", "Tumor")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() +
+  facet_grid(~ cluster)
+
+annot_plot2 <- filter(annot_plot, Group == "Tumor")
+
+ggplot(annot_plot2, aes(x = cluster, y = percent, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity Tumor") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
+
+annot_plot3 <- filter(annot_plot, Group == "TANM")
+
+ggplot(annot_plot3, aes(x = cluster, y = percent, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity TANM") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
+
+annot_plot4 <- dplyr::select(annot_plot, "Patient_No", "cluster", "percent", "Group") %>%
+  pivot_wider(names_from = "Group", values_from = "percent") %>%
+  filter(!is.na(TANM)) %>%
+  mutate(diff = TANM - Tumor)
+
+ggplot(annot_plot4, aes(x = cluster, y = diff, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity % difference") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
+```
