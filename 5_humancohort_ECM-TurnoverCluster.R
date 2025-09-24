@@ -1,930 +1,397 @@
----
-title: "ICC_Cox_regression"
-author: "Tilman Werner"
-date: "5/14/2021"
-output: html_document
----
+### Script for running multi-group limma analysis ---- 
+## Miguel Cosenza 02.07.2020 & Tilman Werner
 
-```{r setup, echo=FALSE, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
+### 1. Please provide a meaningful name for the dataset/experiment ----
+
+exper_code <- "Limma Clusters"
+
+### 2. How many top significant hits do you want to plot (boxplots group vs intensity)? 
+
+n_top_hits <- 20
+
+### 3. Which groups do you want to compare?  
+
+## Required packages ----
+
+packages <- c("dplyr", "here", "tidyr", "ggplot2", "rmarkdown", "knitr", "reshape")
+
+biopackgs <- c("limma")
+
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+          install.packages(setdiff(packages, rownames(installed.packages())))  
+}
+
+if (length(setdiff(biopackgs, rownames(installed.packages()))) > 0){
+          if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+          
+          BiocManager::install(setdiff(biopackgs, rownames(installed.packages())))
+          
+}
+
+library(dplyr)
+library(stringr)
+library(limma)
+library(rmarkdown)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(reshape)
+library(plotly)
 library(lubridate)
 library(survival)
 library(survminer)
-library(dplyr)
-library(grDevices)
-library(knitr)
-library(rstatix)
-library(ggpubr)
-library(DOSE)
-library(org.Hs.eg.db)
-library(enrichplot)
-library(ggnewscale)
-library(ggupset)
-library(clusterProfiler)
-library(made4)
-library(ggridges)
+library(ggrepel)
 library(readxl)
-library(gtsummary)
+library(clusterProfiler)
 `%notin%` <- Negate(`%in%`)
-```
 
-
-```{r, echo=FALSE, include=FALSE}
-### Load and modify data
-wide_dat_pre <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
-  dplyr::select(-X)
-```
-
-#### Load annotation file
-```{r}
+## Load data ----
 annot_dat <- read.csv("results_4_humancohort_tumor_unsupervisedStats/annotation_cluster_k=2.csv") %>%
+  dplyr::rename(Sample_ID = 'Sample') %>%
   filter(Group == "Tumor") %>%
-  filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
-  arrange(Sample) %>%
-  dplyr::rename(`Tumor Stage` = "Tumor.Stage") %>%
-  mutate(`Tumor Stage` = factor(`Tumor Stage`, levels = c("T1", "T2", "T3", "T4"))) %>%
-  mutate(Radiotherapy = factor(Radiotherapy, levels = c("Yes", "No"))) %>%
-  mutate(cluster = factor(cluster, levels = c("cluster1", "cluster2"))) %>%
-  mutate(clustertest = factor(clustertest, levels = c("cluster1", "cluster2")))
-```
+  filter(Sample_ID %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  arrange(Sample_ID)
 
-# Recurrence-free Survival
-
-### Define timepoints
-The clinical annotation includes three timepoints to consider: the tumor resection date, the date of the first recurrence and the last follow-up date.  Days-to-recurrence are the time difference between resection and first recurrence date - days-to-last-follow-up were calculated in the same fashion. 
-For log-rank statistics, patients who did not show a recurrence throughout the course of the study have to be included and censored. Censoring means that they will be considered for statistics, although they obviously did not show a recurrence. Since we know that these patients were recurrence-free until their last follow-up date, we can only include them in the study for the time between their tumor resection and the last follow-up. After their last recurrence free follow up these patients are removed from the log-rank statistics (a.k.a. censoring) without impacting the survival rate. Furthermore, the study is defined to end with the longest time to recurrence. All patients whose time to last follow-up is longer will be censored from then on.  
-
-```{r, echo=FALSE, include=FALSE}
-# Filter samples according to annotation
-wide_dat <- dplyr::select(wide_dat_pre, "Protein", annot_dat$Sample) %>%
-   filter(rowSums(!is.na(.)) / (ncol(.)-1) >= 0.8) 
-```
-
-# Distribution of time to recurrence across samples
-Total number of samples: __`r nrow(annot_dat)`__   
-Number of samples with a known time to recurrence: __`r sum(!is.na(annot_dat$daystorecurrence))`__  
-Number of censored samples without a known time to recurrence: __`r sum(is.na(annot_dat$daystorecurrence))`__
-
-```{r, echo = FALSE}
-overviewplot <- annot_dat %>%
-                arrange(daystoevent) 
-overviewplot$censored <- ifelse(overviewplot$censored ==1, FALSE, TRUE)
-
-plot1 <- ggplot(data = overviewplot, aes(x = reorder(Sample,daystoevent), y = daystoevent, alpha = censored, shape = censored, color = Radiotherapy)) +
-          geom_point() +
-          theme_minimal() +
-          theme(axis.text.x = element_text(size = 0, angle = 90), legend.position = "none") +
-          scale_alpha_manual(values = c(1, 0.4),
-                             breaks = c(FALSE, TRUE)) +
-          scale_color_manual(values = c("grey50", "red"),
-                             breaks = c("No", "Yes")) +
-          labs(x = "", y = "Days to Event") 
-plot1
-
-ggsave("results_6_humancohort_CPHM/Radiotherapy_overview.pdf", plot = plot1, width = 95, height = 48, 
-       units = "mm", dpi = 300, scale = 2)
-
-tiff("results_6_humancohort_CPHM/Radiotherapy_overview.tiff", units = "in", width = 8, height = 4, res = 300, pointsize = (8*200/72))
-plot1
-dev.off()
-
-plot1B <- ggplot(data = overviewplot, aes(x = reorder(Sample,daystoevent), y = daystoevent, alpha = censored, shape = censored, color = clustertest)) +
-          geom_point() +
-          theme_minimal() +
-          theme(axis.text.x = element_text(size = 5, angle = 90)) +
-          scale_alpha_manual(values = c(1, 0.4),
-                             breaks = c(FALSE, TRUE)) +
-          scale_color_manual(values = c("orange", "blue"),
-                             breaks = c("cluster2", "cluster1")) +
-          labs(x = "Sample", y = "Days to Event") 
-plot1B
-
-tiff("results_6_humancohort_CPHM/cluster_overview.tiff", units = "in", width = 8, height = 4, res = 300, pointsize = (8*200/72))
-plot1B
-dev.off()
-
-annot_measurement <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_FullAnnotation.csv")
-annot_measurement2 <- left_join(annot_dat, 
-                                dplyr::select(annot_measurement, "Sample", "measurement_order"),
-                                by = "Sample")
-
-plot1C <- ggplot(data = annot_measurement2, aes(x = reorder(Sample, daystoevent), y = measurement_order)) +
-          geom_point() +
-          theme_minimal() +
-          theme(axis.text.x = element_text(size = 5, angle = 90)) +
-          labs(x = "Sample (sorted by TTR)", y = "Measurement Order") 
-plot1C
-
-tiff("results_6_humancohort_CPHM/measurement_order.tiff", units = "in", width = 8, height = 4, res = 300, pointsize = (8*200/72))
-plot1C
-dev.off()
-```
-
-# Cox proportional hazards model
-
-### Overview covariates
-
-Cox proportional hazards model for all clinical parameters that might have an influence on / or are influenced by recurrence-free-survival time.
-
-```{r, echo=FALSE, fig.height= 15}
-surv_obj_cox <- Surv(time = annot_dat$daystoevent, event = annot_dat$censored)
-
-fit.coxph_cox <- coxph(surv_obj_cox ~ Radiotherapy + `Tumor Stage` + clustertest, data = annot_dat)
-
-plot_overview <- survminer::ggforest(fit.coxph_cox, data = annot_dat)
-print(plot_overview)
-
-tiff("results_6_humancohort_CPHM/Cox_compare_effect.tiff", units = "in", width = 10, height = 5, res = 300, pointsize =(10*200/72))
-print(plot_overview)
-dev.off()
-```
-
-```{r}
-tumorcellularity <- read.csv("Data/tumor_cell_content.csv") %>%
+expr_dat <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
   dplyr::select(-X) %>%
-  dplyr::rename(`Liver Cells %` = "Liver.Cells..") %>%
-  dplyr::rename(`Immune Cells %` = "Immune.Cells..") %>%
-  dplyr::rename(`Necrotic Cells %` = "Necrotic.Cells..") %>%
-  dplyr::rename(`Stromal Cells %` = "Stromal.Cells..") %>%
-  dplyr::rename(`ICC Tumor Cells %` = "ICC.Tumor.Cells..") 
+  dplyr::select("Protein", annot_dat$Sample) 
+expr_dat <- filter(expr_dat, rowSums(!is.na(expr_dat)) / ncol(expr_dat) >= 0.8) 
 
-annot_dat_tucell <- left_join(annot_dat, tumorcellularity, by = "Sample")
+          
+## Define the design matrix ----
 
-surv_obj_cox_tucell <- Surv(time = annot_dat_tucell$daystoevent, event = annot_dat_tucell$censored)
+groups <- as.factor(annot_dat$clustertest)
 
-fit.coxph_cox_tucell <- coxph(surv_obj_cox_tucell ~ `Liver Cells %` + `Immune Cells %` + 
-                         `Necrotic Cells %` +`Stromal Cells %` +`ICC Tumor Cells %`, data = annot_dat_tucell)
+design <- model.matrix(~0+groups)
 
-fit.coxph_cox_tucell <- coxph(surv_obj_cox_tucell ~ `ICC Tumor Cells %`, data = annot_dat_tucell)
+row.names(design) <- annot_dat$Sample_ID
 
-plot_overview <- survminer::ggforest(fit.coxph_cox_tucell, data = annot_dat_tucell)
-print(plot_overview)
+colnames(design) <- colnames(design) %>% str_remove(., "groups") %>% str_trim()
 
-tiff("results_6_humancohort_CPHM/Cox_compare_effect_tucell.tiff", units = "in", width = 12, height = 4, res = 300, pointsize =(12*200/72))
-print(plot_overview)
-dev.off()
+# 3. DEFINE WHICH GROUPS YOU WISH TO COMPARE ----
 
-png("results_6_humancohort_CPHM/Cox_compare_effect_tucell.png", units = "in", width = 12, height = 4, res = 300, pointsize =(12*200/72))
-print(plot_overview)
-dev.off()
-```
+contrast.matrix <- makeContrasts(cluster2-cluster1, levels=design) # MODIFY THIS LINE
 
+## Prep expression data matrix ----
+n_contrasts <- dim(contrast.matrix)[2]
 
-```{r, echo=FALSE, warning=FALSE, fig.height = 8}
-surv_obj <- Surv(time = annot_dat$daystoevent, event = annot_dat$censored)
-fit2 <- survfit(surv_obj ~ Radiotherapy, data = annot_dat)
+tomat <- dplyr::select(expr_dat,
+                       -Protein, row.names(design)) %>% as.data.frame()
 
-plot2 <- ggsurvplot(fit2, data = annot_dat, pval = TRUE, 
-                   xlab = "Time-to-Recurrence [days]", ylab = "Recurrence-free survival",
-                   palette = c("red", "grey"), risk.table = TRUE)
-plot2
+row.names(tomat) <- expr_dat$Protein
 
-svg("results_6_humancohort_CPHM/Radiotherapy_KM.svg", width = 8, height = 6, pointsize =(8*200/72))
-plot2
-dev.off()
+mat <- as.matrix(tomat)
 
-tiff("results_6_humancohort_CPHM/Radiotherapy_KM.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*200/72))
-plot2
-dev.off()
-```
+## Execute the linear model / limma ----
 
-### Protein hits
+fit <- lmFit(mat, design = design)
 
-For each protein/each row in the expression matrix the following steps are performed:
+fit2 <- contrasts.fit(fit, contrast.matrix)
 
-1) Expression data of respective protein is transferred into long format and NAs are removed. 
-1b) For non-imputed data, NAs have to be removed more carefully. A maximum fraction of missing values per protein is defined and only proteins above this threshold undergo the statistical test. 
+fit2 <- eBayes(fit2)
 
-2) A matrix containing the time to event (either recurrence or last follow-up date) for each sample is created. Censoring information is included as well. 
-The subsequent Cox regression test checks, whether the hazard of having a recurrence changes depending on the protein's expression level. A hazard ratio and p-values from three different confirmation tests (Likelihood-ratio, Wald, Logrank) are computed. If the hazard ratio is e.g. 0.5, an increase of the selected protein's abundance by 1 halves the risk to suffer from a recurrence at a given time-point. CAVE: in this case, protein abundance means log2(LFQ intensity)!
+output_limma2 <- topTable(fit2, adjust.method = "BH", number = Inf)
 
-3) To correct for multiple testing, an adjusted p-value is calculated via Benjamini-Hochberg (FDR based correction). All results are saved as a CSV. 
-
-4) All significant protein hits are summarized in a forest plot. Additionally, a plot is saved for each individual protein. 
+output_limma2$Protein <- row.names(output_limma2)
 
 
-```{r, include = FALSE}
-adjpvalue_threshold <- 0.05
-```
+## Generate output ----
 
-__adjusted p-value threshold = `r adjpvalue_threshold`__  
+## output tabular list ----
 
-```{r, include = FALSE}
-nathreshold <- 0.2
-```
+list_tabular <- list()
 
-__Maximum fraction of missing values per protein = `r nathreshold`__
-
-```{r, echo=FALSE, include=FALSE}
-stats_table <- data.frame(matrix(nrow = 0, ncol = 5))
-colnames(stats_table) <- c("Protein", "HazardRatio","pvalue", "lower95", "upper95")
-
-i <-  nrow(wide_dat)
-while (i > 0) {
-  
-      protein <- wide_dat[i,] 
-      #1)
-      obj <-  filter(wide_dat[i,]) %>%
-              column_to_rownames(var = "Protein") %>%
-              pivot_longer(cols = colnames(wide_dat[,-1]), names_to = "Sample", values_to = "Abundance") %>%
-              na.omit() %>%
-              left_join(annot_dat, by = "Sample")
-      
-      #1b)
-      if (sum(!is.na(obj$Abundance)) >= (1-nathreshold)*(ncol(wide_dat)-1)) {
-        
-              #2)
-              surv_obj <- Surv(time = obj$daystoevent, event = obj$censored)
-              fit.coxph <- coxph(surv_obj ~ Abundance + Radiotherapy, data = obj) 
-              
-              coxph_result <- summary(fit.coxph)
-              coxph_pvalue <- coxph_result$coefficients
-              coxph_pvalue <- coxph_pvalue[, 5]
-              coxph_hazard <- coxph_result$conf.int
-              
-              
-              stats_table <- rbind(stats_table, t(rbind(Protein = protein$Protein, HazardRatio = coxph_hazard[1,1], 
-                                                        pvalue = coxph_pvalue, lower95 = coxph_hazard[1,3], 
-                                                        upper95 = coxph_hazard[1,4])))
-              }
-     
-      i <- i-1
-      print(i)
+for (i in 1:n_contrasts){
+          
+          outlim <- topTable(fit2, coef = i, adjust.method = "BH", number = Inf)
+          outlim$Protein <- row.names(outlim)
+          outlim$Contrast <- colnames(contrast.matrix)[i]
+          list_tabular[[i]] <- outlim
 }
-stats_table$HazardRatio <- as.numeric(stats_table$HazardRatio)
-stats_table$pvalue <- as.numeric(stats_table$pvalue)
-stats_table$lower95 <- as.numeric(stats_table$lower95)
-stats_table$upper95 <- as.numeric(stats_table$upper95)
-stats_table <- mutate(stats_table, type = rownames(stats_table)) %>%  #activate if Covariables are included
-              filter(str_detect(type, "Abundance") == TRUE)
-```
 
-```{r, echo=FALSE, include=FALSE}
-#3
-stats_table <- mutate(stats_table, adj.pvalue = p.adjust(stats_table$pvalue, method = "BH"))
+names(list_tabular) <- colnames(contrast.matrix)
 
-write.csv(stats_table, "results_6_humancohort_CPHM/stats_table.csv")
+write.table(output_limma2,
+            file = "results_5_humancohort_ECM-TurnoverCluster/tab_output_general_Ftest_limma.txt",
+            row.names = FALSE, col.names = TRUE)
 
-adj.hits_stats <- filter(stats_table, adj.pvalue <= adjpvalue_threshold) %>%
-                arrange(HazardRatio)
-adj.hits <- filter(wide_dat, Protein %in% adj.hits_stats$Protein)  
-```
+sig_hits <- dplyr::filter(output_limma2, 
+                               adj.P.Val <= 0.05) %>% row.names(.)
 
-```{r, echo=FALSE, include=FALSE}
+n_significant <- length(sig_hits)
+
+top_n_hits <- slice_min(output_limma2, n = n_top_hits, order_by = adj.P.Val, with_ties = FALSE)
+
+
+#load proteome gene names
+
 humanproteome <- read.delim("Data/uniprot-proteome UP000005640+reviewed yes(incl.GO).tab") %>%
-dplyr::rename(Protein = "Entry") 
-entries <- str_split_fixed(humanproteome$Entry.name, "_", n=Inf)
-genes <- str_split_fixed(humanproteome$Gene.names, " ", n=Inf)
+  dplyr::rename(Protein = "Entry") 
+entries       <- str_split_fixed(humanproteome$Entry.name, "_", n=Inf)
 humanproteome$Entry.name <- entries[,1]
-humanproteome$Gene.names <- genes[,1]
 
-#remove redundant Uniprot IDs
-adj.hits_stats2 <- adj.hits_stats %>%
-                   mutate(IDunique = Protein)
-adj.hits_stats2$Protein <- substr(adj.hits_stats$Protein, nchar(adj.hits_stats$Protein) - 6 + 1, nchar(adj.hits_stats$Protein))
 
-adj.hits_stats2 <- left_join(adj.hits_stats2, humanproteome, by = "Protein")
-                    
-write.csv(adj.hits_stats2, file = "results_6_humancohort_CPHM/Coxph_adj.hits_stats.csv")
-```
+## Prep some boxplots for the top proteins with lowest P-values ----
 
-```{r, echo = FALSE, fig.width = 12, fig.height = 8}
-ggtable <- adj.hits_stats2 %>%
-            mutate(log2HazardRatio = log2(round(HazardRatio, digits = 3))) %>%
-            mutate(log2lower95 = log2(lower95)) %>%
-            mutate(log2upper95 = log2(upper95)) %>%
-  mutate(IDunique = paste(Gene.names)) %>%
-  arrange(log2HazardRatio)
-           
+slim_expr <- pivot_longer(expr_dat, cols = colnames(mat),
+                          names_to = "Sample_ID",
+                          values_to = "Abundance") 
 
-ggtable$IDunique <- factor(ggtable$IDunique, levels = ggtable$IDunique)
+slim_expr_g <- left_join(slim_expr, annot_dat,
+                         by = "Sample_ID")
 
-plot3 <- ggplot(data = ggtable, aes(x = IDunique, y = log2HazardRatio, 
-                           ymin = log2lower95, ymax = log2upper95,
-                           color = adj.pvalue)) +
-  geom_point(size = 3) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(size = 7, angle = 90, face = "bold")) +
-  geom_errorbar() +
-  scale_color_gradient(limits = c(0, 0.05), low = "red", high = "purple") +
-  labs(x = "Protein Hits (Uniprot / Gene IDs)", y = "log2 Hazard Ratio", color = "p.adjust") 
-plot3
+hits_expr <- filter(slim_expr_g, Protein %in% row.names(top_n_hits))
+hits_expr <- left_join(hits_expr, humanproteome, by = "Protein")            
 
-tiff("results_6_humancohort_CPHM/CPHMresult.tiff", units = "in", width = 10, height = 4, res = 300, pointsize =(10*200/72))
-plot3
-dev.off()
 
-hitlist <- mutate(adj.hits_stats, score = abs(log2(HazardRatio) * -log10(adj.pvalue))) %>%
-  mutate(updown = ifelse(HazardRatio > 1, "up", "down")) %>%
-  group_by(updown) %>%
-  slice_max(order_by = score, n = 10) %>%
-  ungroup()
+boxplots <- ggplot(hits_expr,
+                   aes(x = clustertest, y = Abundance)) +
+          geom_boxplot()+
+          facet_wrap(Entry.name ~ .)
 
-stats_table <- left_join(stats_table, humanproteome, by = "Protein")
+plot(boxplots)
+## Prep volcano plots for contrasts ----
 
-plot3B <- ggplot(stats_table, aes(x = log2(HazardRatio), y = -log10(adj.pvalue))) +
-  geom_point(data = filter(stats_table, adj.pvalue > 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
+merged_limmacontr <- reshape::merge_all(list_tabular)
+
+write.table(merged_limmacontr,
+            file = "results_5_humancohort_ECM-TurnoverCluster/tab_output_per_contrasts_limma.txt",
+            row.names = FALSE, col.names = TRUE)
+
+tovolc <- merged_limmacontr %>% mutate(Differentially_expressed = case_when(adj.P.Val <= 0.05 ~ TRUE, TRUE ~ FALSE)) 
+tovolc <- left_join(tovolc, humanproteome, by = "Protein")
+tovolc$Gene.names <- str_split_fixed(tovolc$Gene.names, " ", n = Inf)
+tovolc <- mutate(tovolc, factor = (logFC * -log10(adj.P.Val)))
+write.csv(tovolc, "results_5_humancohort_ECM-TurnoverCluster/volcano_hits.csv")
+
+tophits1 <- filter(tovolc, adj.P.Val <= 0.001) 
+tophits2 <-  slice_max(tophits1, order_by = logFC, n = 15) %>%
+  bind_rows(slice_min(tophits1, order_by = logFC, n = 15))
+
+#volcanoplot 
+volcanoes2 <- ggplot(data = tovolc, 
+                    mapping = aes(x = logFC,
+                                  y = -log10(adj.P.Val)),
+                    label = Entry.name) + 
+  geom_point(data = filter(tovolc, adj.P.Val > 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
              color = "black", alpha = 0.5) +
-  geom_point(data = filter(stats_table, log2(HazardRatio) < 0, adj.pvalue <= 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
+  geom_point(data = filter(tovolc, logFC < 0, adj.P.Val <= 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
              color = "blue", alpha = 0.5) +
-  geom_point(data = filter(stats_table, log2(HazardRatio) > 0, adj.pvalue <= 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
-             color = "red", alpha = 0.5) +
-  theme_minimal() +
-  geom_text_repel(aes(label=ifelse(Protein %in% hitlist$Protein, as.character(Gene.names),'')),
+  geom_point(data = filter(tovolc, logFC > 0, adj.P.Val <= 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "orange", alpha = 0.5) +
+  theme_classic() +
+  geom_text_repel(aes(label=ifelse(Protein %in% tophits2$Protein, as.character(Gene.names[,1]),'')),
                   hjust=0, vjust=0, size = 3, max.overlaps = Inf, min.segment.length = 2, point.size = NA) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-  # labs(title = "Protein Hits", subtitle = "Differentially expressed Cluster 1 vs. Cluster 2") +
-  xlab("log2 Hazard Ratio") +
+  #labs(title = "Protein Hits", subtitle = "Differentially expressed Cluster 1 vs. Cluster 2") +
+  xlab("log2 fold change") +
   ylab("-log10 adj. p-value")
-plot3B
+volcanoes2
 
-ggsave("results_6_humancohort_CPHM/CPHMresult_volcano.pdf", plot = plot3B, width = 105, height = 81, 
+ggsave("results_5_humancohort_ECM-TurnoverCluster/volcano.pdf", plot = volcanoes2, width = 90, height = 73, 
        units = "mm", dpi = 300, scale = 2)
 
-tiff("results_6_humancohort_CPHM/CPHMresult_volcano.tiff", units = "in", width = 5, height = 5, res = 300, pointsize =(5*200/72))
-plot3B
+tiff("results_5_humancohort_ECM-TurnoverCluster/volcano.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*100/72))
+volcanoes2
 dev.off()
-```
-
-```{r}
-limmaclust <- read.csv("results_5_humancohort_ECM-TurnoverCluster/volcano_hits.csv") %>%
-  filter(Protein %in% adj.hits_stats2$Protein) %>%
-  dplyr::select("Protein", "logFC", "adj.P.Val") %>%
-  left_join(dplyr::select(adj.hits_stats2, "Protein", "HazardRatio", "adj.pvalue"), by = "Protein") %>%
-  mutate(bothsignificant = ifelse(abs(logFC) >= 0.8 & adj.pvalue <= 0.05, TRUE, FALSE)) %>%
-  left_join(humanproteome, by = "Protein") %>%
-  mutate(log2HR = log2(HazardRatio)) 
 
 
-limmaclust_ECM <- filter(limmaclust, logFC <= -0.8 & adj.P.Val <= 0.05)
-limmaclust_turnover <- filter(limmaclust, logFC >= 0.8 & adj.P.Val <= 0.05)
+plot(volcanoes2)
 
-ggplot(limmaclust, aes(x = logFC, y = log2HR, alpha = bothsignificant)) +
-  geom_point(data = filter(limmaclust, logFC > 0), color = "orange") +
-  geom_point(data = filter(limmaclust, logFC < 0), color = "blue") +
-  scale_alpha_manual(breaks = c(TRUE, FALSE),
-                     values = c(1, 0.3)) +
-  theme_classic() +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  ylab("log2 Hazard Ratio") +
-  xlab("log2 Fold-Change")
+### Kaplan-Meier Curve
+surv_obj <- Surv(time = annot_dat$daystoevent, event = annot_dat$censored)
+fit1 <- survfit(surv_obj ~ clustertest, data = annot_dat)
+  
+plot2 <- ggsurvplot(fit1, data = annot_dat, pval = TRUE, 
+                    conf.int = FALSE, surv.median.line = "v",
+                   xlab = "Days to Recurrence", ylab = "Probability", 
+                   palette = c("blue", "orange"), risk.table = TRUE, pval.coord = c(1200, 0.8),
+                   pval.method = FALSE)
+print(plot2)
 
-
-# abundance CV across samples
-CVproteinhits <- dplyr::select(adj.hits, "Protein") %>%
-  mutate(CV = apply(adj.hits, 1, sd, na.rm = TRUE))
-
-adj.hitsCV <- column_to_rownames(adj.hits, var = "Protein")
-subtractor <- apply(adj.hitsCV[,-1], 1, median, na.rm = TRUE)
-adj.hitsCV <- adj.hitsCV - subtractor
-adj.hitsCV <- rownames_to_column(adj.hitsCV, var = "Protein")
-
-limmaclust <- left_join(limmaclust, CVproteinhits, by = "Protein")
-
-write.csv(limmaclust, file = "results_6_humancohort_CPHM/Coxph_adj.hits_stats_incl.CV.csv")
-
-limmaclust2 <- filter(limmaclust, CV >= 1) %>%
-  filter(bothsignificant == TRUE)
-
-adj.hits_long <- pivot_longer(adj.hitsCV, cols = contains("KB"), names_to = "Sample", values_to = "Abundance") %>%
-  left_join(CVproteinhits, by = "Protein")
-
-ggplot(adj.hits_long, aes(x = reorder(Protein, CV), y = Abundance)) +
-  geom_boxplot(outlier.shape = NA) +
-  theme_classic() +
-  geom_hline(yintercept = 0.5, linetype = "dashed") +
-  geom_hline(yintercept = -0.5, linetype = "dashed") +
-  theme(axis.text.x = element_text(angle = 90, size = 4)) +
-  xlab("")
-
-# new volcano
-stats_table2 <- left_join(stats_table, CVproteinhits, by = "Protein") %>%
-  mutate(Hit = ifelse(CV >= 1 & abs(log2(HazardRatio)) >= 0.7, TRUE, FALSE))
-
-plot3C <- ggplot(stats_table2, aes(x = log2(HazardRatio), y = -log10(adj.pvalue))) +
-  geom_point(data = filter(stats_table, adj.pvalue > 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
-             color = "black", alpha = 0.5) +
-  geom_point(data = filter(stats_table, log2(HazardRatio) < 0, adj.pvalue <= 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
-             color = "blue", alpha = 0.5) +
-  geom_point(data = filter(stats_table, log2(HazardRatio) > 0, adj.pvalue <= 0.05), 
-             mapping = aes(x = log2(HazardRatio), y = -log10(adj.pvalue)),
-             color = "red", alpha = 0.5) +
-  theme_minimal() +
-  geom_text_repel(aes(label=ifelse(Hit == TRUE , as.character(Gene.names),'')),
-                  hjust=0, vjust=0, size = 3, max.overlaps = Inf, min.segment.length = 2, point.size = NA) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-  # labs(title = "Protein Hits", subtitle = "Differentially expressed Cluster 1 vs. Cluster 2") +
-  xlab("log2 Hazard Ratio") +
-  ylab("-log10 adj. p-value")
-plot3C
-
-ggsave("results_6_humancohort_CPHM/CPHMresult_volcano_Hits.pdf", plot = plot3C, width = 105, height = 81, 
-       units = "mm", dpi = 300, scale = 2)
-
-tiff("results_6_humancohort_CPHM/CPHMresult_volcano_Hits.tiff", units = "in", width = 5, height = 5, res = 300, pointsize =(5*200/72))
-plot3C
+svg("results_5_humancohort_ECM-TurnoverCluster/KM.svg", width = 6, height = 5, pointsize =(5*100/72))
+print(plot2)
 dev.off()
-```
 
-```{r}
-oldCPHM <- read.csv("D:/data/Klara/Klara_cohort/Analysis_General/General/4 Statistics/1.1.2_3.1_4.5_Time-to-Recurrence/tumor/results/Coxph_adj.hits_stats.csv")
+plot2B <- ggsurvplot(fit1, data = annot_dat, pval = TRUE, 
+                    conf.int = FALSE, 
+                    xlab = "Days to Recurrence", ylab = "Probability", 
+                    palette = c("blue", "orange"), risk.table = FALSE, pval.coord = c(1200, 0.8),
+                    pval.method = FALSE)
+print(plot2B)
 
-commonprots <- intersect(adj.hits_stats2$Protein, oldCPHM$ID)
- 
-fit <- euler(c(
-  TimsTOF = (length(adj.hits_stats2$Protein) - length(commonprots)),
-  QE = (length(oldCPHM$ID) - length(commonprots)),
-  "TimsTOF&QE" = length(commonprots)
-))
-plot4 <- plot(fit, fills = list(fill = c("lightblue", "blue"), alpha = 0.5), quantities = TRUE)
-plot4
-```
+svg("results_5_humancohort_ECM-TurnoverCluster/KM_graphabstr.svg", width = 4, height = 3, pointsize =(4*100/72))
+print(plot2B)
+dev.off()
 
-# Gene Ontology of Protein Hits
+tiff("results_5_humancohort_ECM-TurnoverCluster/KM_graphabstr.tiff", units = "in", width = 4, height = 3, res = 300, pointsize =(4*100/72))
+plot2B
+dev.off()
 
-Different enrichment analyses of protein hits shown above. Performed with GeneOntology and KEGG databases.
-
-### Proteins associated with higher risk
-
-##### Gene Set Enrichment Analysis 
-
-```{r, figure.widh = 12, figure.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
-hazardgse <- dplyr::rename(stats_table, UNIPROT = "Protein")
-hazardgse$HazardRatio <-  log2(hazardgse$HazardRatio)
-
-gene.df <- bitr(hazardgse$UNIPROT, fromType = "UNIPROT", 
-                toType = c("ENTREZID"),
-                OrgDb = org.Hs.eg.db)
-gseList <- left_join(gene.df, hazardgse, by = "UNIPROT") %>%
-              dplyr::select(ENTREZID, HazardRatio)
-
-geneList = gseList[,2]
-names(geneList) = as.character(gseList[,1])
+### Gene Set Enrichment
+geneList <- tovolc$logFC
+names(geneList) = as.character(tovolc$Protein)
 geneList = sort(geneList, decreasing = TRUE)
 
-gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot4 <- ridgeplot(gse, label_format = 20) + 
-  theme(axis.text.y = element_text(size = 9)) + 
+# activate as needed
+gse <- readRDS("results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
+# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
+#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+# 
+# saveRDS(gse, file = "results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
+
+ridgeplot <- ridgeplot(gse, label_format = 20) + 
+  theme(axis.text.y = element_text(size = 6)) + 
   scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
-  labs(x = "log2 Hazard Ratio", title = "Ontology: Biological Processes")
-plot4
+  labs(x = "log2-fold change", title = "Ontology: Biological Processes")
+ridgeplot
 
-tiff("results_6_humancohort_CPHM/ridgeplot_BP.tiff", units = "in", width = 14, height = 10, res = 300, pointsize =(10*200/72))
-plot4
+tiff("results_5_humancohort_ECM-TurnoverCluster/ridgeplot.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*100/72))
+ridgeplot
 dev.off()
 
-gse2 <- gseGO(geneList, ont = "MF", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot5 <- ridgeplot(gse2, label_format = 20) + 
-  theme(axis.text.y = element_text(size = 9)) +
-  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
-  labs(x = "log2 Hazard Ratio", title = "Ontology: Molecular Function")
-plot5
+plot <- gse@result 
+plot1data <- slice_max(gse@result, enrichmentScore, n = 8) %>%
+  bind_rows(slice_min(gse@result, enrichmentScore, n = 8)) %>%
+  mutate(Description = str_wrap(Description, width = 50))
 
-tiff("results_6_humancohort_CPHM/ridgeplot_MG.tiff", units = "in", width = 14, height = 10, res = 300, pointsize =(10*200/72))
-plot5
-dev.off()
-
-highrisk <- filter(hazardgse, HazardRatio >= 0)
-geneListhighrisk <- highrisk$HazardRatio
-names(geneListhighrisk) = as.character(highrisk$UNIPROT)
-geneListhighrisk = sort(geneListhighrisk, decreasing = TRUE)
-
-lowrisk <- filter(hazardgse, HazardRatio <= 0)
-geneListlowrisk <- lowrisk$HazardRatio * -1
-names(geneListlowrisk) = as.character(lowrisk$UNIPROT)
-geneListlowrisk = sort(geneListlowrisk, decreasing = TRUE)
-
-bla <- list(`high risk` = geneListhighrisk, `low risk` = geneListlowrisk)
-
-ck <- compareCluster(bla, fun = gseGO, OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80)
-plot2 <- dotplot(ck)
-plot2
-
-tiff("results_6_humancohort_CPHM/dotplot2.tiff", units = "in", width = 8, height =6, res = 300, pointsize =(8*100/72))
-plot2
-dev.off()
-
-highrisk <- filter(hazardgse, HazardRatio > 0 & adj.pvalue <= 0.05)
-geneListhighrisk <- highrisk$UNIPROT
-
-lowrisk <- filter(hazardgse, HazardRatio < 0 & adj.pvalue <= 0.05)
-geneListlowrisk <- lowrisk$UNIPROT
-
-bla <- list(`high risk` = geneListhighrisk, `low risk` = geneListlowrisk)
-
-ck <- compareCluster(bla, fun = enrichGO, OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80)
-plot2B <- dotplot(ck)
-plot2B
-
-tiff("results_6_humancohort_CPHM/dotplot3_hits.tiff", units = "in", width = 10, height =6, res = 300, pointsize =(8*100/72))
-plot2B
-dev.off()
-```
-
-
-GSEA of all proteins associated with higher risk to recurrence in the dataset: Hazard Ratio > 1 (no p-value adjustment)
-
-```{r, figure.widh = 12, echo = FALSE, message = FALSE, warning = FALSE}
-hazardupgse <- filter(stats_table, stats_table$HazardRatio > 1) %>%
-              dplyr::rename(UNIPROT = "Protein")
-hazardupgse$HazardRatio <-  log2(hazardupgse$HazardRatio)
-
-gene.df_up <- bitr(hazardupgse$UNIPROT, fromType = "UNIPROT", 
-                toType = c("ENTREZID"),
-                OrgDb = org.Hs.eg.db)
-gseListup <- left_join(gene.df_up, hazardupgse, by = "UNIPROT") %>%
-              dplyr::select(ENTREZID, HazardRatio)
-
-geneListup = gseListup[,2]
-names(geneListup) = as.character(gseListup[,1])
-geneListup = sort(geneListup, decreasing = TRUE)
-
-gse_up <- gseGO(geneListup, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot6 <- dotplot(gse_up, label_format =20, font.size = 6) +
+plot1 <- ggplot(plot1data, aes(x = enrichmentScore, y = reorder(Description, enrichmentScore), size = setSize, color = p.adjust)) +
+  geom_segment(aes(x = 0, xend = enrichmentScore, 
+                   y = reorder(Description, enrichmentScore), yend = reorder(Description, enrichmentScore)),
+               color = "grey", linewidth = 0.2) +
+  geom_point() +
   theme_classic() +
-  theme(axis.text.y = element_text(size = 6)) +
-  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) 
-  #labs(title = "Ontology: Biological Process", subtitle = "Hazard Ratio > 1")
-plot6
+  theme(axis.text.y= element_text(size = 8)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  geom_vline(xintercept = 0) +
+  ylab("") +
+  xlab("enrichment score")
+plot1
 
-ggsave("results_6_humancohort_CPHM/dotplot_hazardup.pdf", plot = plot6, width = 58, height = 39, 
+ggsave("results_5_humancohort_ECM-TurnoverCluster/dotplot.pdf", plot = plot1, width = 98, height = 54, 
        units = "mm", dpi = 300, scale = 2)
 
-tiff("results_6_humancohort_CPHM/dotplot_hazardup.tiff", units = "in", width = 6, height = 4, res = 300, pointsize =(4*200/72))
-plot6
+tiff("results_5_humancohort_ECM-TurnoverCluster/dotplot.tiff", units = "in", width = 8, height = 4, res = 300, pointsize =(8*100/72))
+plot1
 dev.off()
 
-gse_up2 <- gseGO(geneListup, ont = "MF", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot7 <- cnetplot(gse_up2, node_label="category", categorySize = "geneNum", foldChange = gse_up2, cex_label_category = 1)
-plot7
+# EIF4A1
+expr_dat2 <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
+  dplyr::select(-X) %>%
+  dplyr::select("Protein", annotation$Sample) %>%
+  filter(Protein == "P60842") %>%
+  pivot_longer(cols = contains("KB"), names_to = "Sample", values_to = "Abundance") %>%
+  left_join(annotation, by = "Sample")
 
-tiff("results_6_humancohort_CPHM/network_hazardup.tiff", units = "in", width = 6, height = 4, res = 300, pointsize =(4*200/72))
-plot7
-dev.off()
-```
-  
-### Proteins associated with lower risk
+plot4 <- ggplot(expr_dat2, aes(x = Tissue, y = Abundance, fill = clusterinfo)) +
+  geom_line(aes(group = Patient_No)) +
+  geom_boxplot(width = 0.5) +
+  #geom_jitter() +
+  facet_wrap(~ clustertest) +
+  scale_fill_manual(values = c("cadetblue", "orange", "blue"),
+                    breaks = c("TANM", "cluster2", "cluster1")) +
+  stat_compare_means(comparisons = list(c("normal", "Tumor"))) +
+  theme_minimal()
 
-##### Gene Set Enrichment Analysis 
 
-GSEA of all proteins associated with lower risk to recurrence in the dataset: Hazard Ratio < 1 (no p-value adjustment)
-
-```{r, figure.widh = 12, echo = FALSE, message = FALSE, warning = FALSE}
-hazarddowngse <-  filter(stats_table, stats_table$HazardRatio < 1) %>%
-                  dplyr::rename(UNIPROT = "Protein") 
-hazarddowngse <- dplyr::rename(stats_table, UNIPROT = "Protein")
-hazarddowngse$HazardRatio <-  log2(hazarddowngse$HazardRatio)  
-
-gene.df_down <- bitr(hazarddowngse$UNIPROT, fromType = "UNIPROT", 
-                toType = c("ENTREZID"),
-                OrgDb = org.Hs.eg.db)
-gseListdown <- left_join(gene.df_down, hazarddowngse, by = "UNIPROT") %>%
-              dplyr::select(ENTREZID, HazardRatio)
-
-geneListdown = gseListdown[,2]
-names(geneListdown) = as.character(gseListdown[,1])
-geneListdown = sort(geneListdown, decreasing = TRUE)
-
-gse_down <- gseGO(geneListdown, ont = "MF", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-
-plot8 <- dotplot(gse_down, label_format =20, font.size = 6) + 
-  theme_classic() +
-  theme(axis.text.y = element_text(size = 6)) +
-  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) 
-  #labs(title = "Ontology: Biological Process", subtitle = "Hazard Ratio < 1")
-plot8
-
-ggsave("results_6_humancohort_CPHM/dotplot_hazarddown.pdf", plot = plot8, width = 58, height = 39, 
-       units = "mm", dpi = 300, scale = 2)
-
-tiff("results_6_humancohort_CPHM/dotplot_hazarddown.tiff", units = "in", width = 6, height = 4, res = 300, pointsize =(4*200/72))
-plot8
+tiff("results_5_humancohort_ECM-TurnoverCluster/EIF4A1.tiff", units = "in", width = 4, height = 4, 
+     res = 300, pointsize =(4*100/72))
+plot4
 dev.off()
 
-plot9 <- cnetplot(gse_down, node_label="category", categorySize = "geneNum", foldChange = gse_up2, cex_label_category = 1)
-plot9
+# KEGG pathway enrichment
+tovolcsign <- filter(tovolc, adj.P.Val <= 0.05)
+input_pos <-  bitr(tovolcsign$Protein, fromType = "UNIPROT", 
+                   toType = c("ENTREZID"),
+                   OrgDb = org.Hs.eg.db) %>%
+  dplyr::rename(Protein = "UNIPROT")
 
-tiff("results_6_humancohort_CPHM/network_hazarddown.tiff", units = "in", width = 6, height = 4, res = 300, pointsize =(4*200/72))
-plot9
-dev.off()
-```
+fgdata <- left_join(input_pos, dplyr::select(tovolcsign, "Protein", "logFC"), by = "Protein") %>%
+  add_count(ENTREZID) %>%
+  filter(n == 1) %>%
+  dplyr::select(-n) %>%
+  column_to_rownames(var = "ENTREZID") %>%
+  dplyr::select(-Protein)
 
-# Overall Survival
+KEGG_enrichment_result <- enrichKEGG(input_pos$ENTREZID,
+                                     organism = 'hsa',
+                                     pvalueCutoff = 0.05)
 
-```{r, echo=FALSE, include=FALSE}
-annot_dat_OS <-  mutate(annot_dat, Alive = str_replace(Alive, "DOC", "DOD")) %>%
-  mutate(censored_OS = as.numeric(Alive == "DOD"))  
+hsa <- KEGG_enrichment_result$ID
 
-maxtime <- filter(annot_dat_OS, Alive == "DOD") 
-maxtime2 <- max(maxtime$daystolastfu)
+KEGG_MN <- cbind(KEGG_enrichment_result$ID, KEGG_enrichment_result$Description, 
+                 KEGG_enrichment_result$p.adjust, KEGG_enrichment_result$Count, 
+                 KEGG_enrichment_result$geneID)
 
-annot_dat_OS$daystoevent_OS <- ifelse(annot_dat_OS$daystolastfu > maxtime2, 
-                                maxtime2 , annot_dat_OS$daystolastfu)   
-write.csv(annot_dat, file = "results_6_humancohort_CPHM/annotation_overallsurvival.csv")
-```
+names(KEGG_MN) <- c("KeggPathway","Description","p-value","Count","Genes")
+write.table(KEGG_MN,
+            file = "results_5_humancohort_ECM-TurnoverCluster/KEGG_90_NM.txt",
+            row.names = FALSE, col.names = TRUE, quote = FALSE, sep="\t"
+)
 
-### Distribution of overall survivial across samples
-Total number of samples: __`r nrow(annot_dat)`__   
-Number of samples with a known last follow up date: __`r sum(!is.na(annot_dat$daystolastfu))`__  
-Number of censored samples: __`r sum(annot_dat$censored == 0)`__
-
-```{r, echo = FALSE}
-overviewplot_OS <- annot_dat_OS
-overviewplot_OS$censored_OS <- ifelse(overviewplot_OS$censored_OS ==1, FALSE, TRUE)
-
-plot1_OS <- ggplot(data = overviewplot_OS, aes(x = reorder(Sample, daystoevent_OS),
-                                               y = daystoevent_OS, alpha = censored_OS)) +
-          geom_point() +
-          theme(axis.text.x = element_text(size = 6, angle = 90)) +
-          scale_alpha_manual(values = c(0.3, 1),
-          breaks = c(TRUE, FALSE))
-
-tiff("results_6_humancohort_CPHM/overview_OS.tiff", units = "in", width = 8, height = 4, res = 300, pointsize = (8*200/72))
-plot1_OS
-dev.off()
-
-plot1B_OS <- ggplot(data = overviewplot_OS, aes(x = reorder(Sample, daystoevent_OS), 
-                                             y = daystoevent_OS, alpha = censored_OS, 
-                                             shape = censored_OS, color = clustertest)) +
-          geom_point() +
-          theme_minimal() +
-          theme(axis.text.x = element_text(size = 5, angle = 90)) +
-          scale_alpha_manual(values = c(1, 0.4),
-                             breaks = c(FALSE, TRUE)) +
-          scale_color_manual(values = c("orange", "blue"),
-                             breaks = c("cluster2", "cluster1")) +
-          labs(x = "Sample", y = "Days to Event") 
-plot1B_OS
-
-tiff("results_6_humancohort_CPHM/cluster_overview_OS.tiff", units = "in", width = 8, height = 4, res = 300, pointsize = (8*200/72))
-plot1B_OS
-dev.off()
-```
-
-```{r}
-annot_dat_tucell_OS <- left_join(annot_dat_OS, tumorcellularity, by = "Sample")
-
-surv_obj_cox_tucell_OS <- Surv(time = annot_dat_tucell_OS$daystoevent_OS, event = annot_dat_tucell_OS$censored_OS)
-
-fit.coxph_cox_tucell_OS <- coxph(surv_obj_cox_tucell_OS ~ `Liver Cells %` + `Immune Cells %` + 
-                         `Necrotic Cells %` +`Stromal Cells %` +`ICC Tumor Cells %`, data = annot_dat_tucell_OS)
-
-fit.coxph_cox_tucell_OS <- coxph(surv_obj_cox_tucell_OS ~ `ICC Tumor Cells %`, data = annot_dat_tucell_OS)
-
-plot_overview <- survminer::ggforest(fit.coxph_cox_tucell_OS, data = annot_dat_tucell_OS)
-print(plot_overview)
-
-tiff("results_6_humancohort_CPHM/Cox_compare_effect_tucell_OS.tiff", units = "in", width = 12, height = 4, res = 300, pointsize =(12*200/72))
-print(plot_overview)
-dev.off()
-
-png("results_6_humancohort_CPHM/Cox_compare_effect_tucell_OS.png", units = "in", width = 12, height = 4, res = 300, pointsize =(12*200/72))
-print(plot_overview)
-dev.off()
-```
-
-
-### Cox proportional hazards model
-
-##### Overview covariates
-
-Cox proportional hazards model for all clinical parameters that might have an influence on / or are influenced by recurrence-free-survival time.
-
-```{r, echo=FALSE, fig.height= 15}
-surv_obj_cox <- Surv(time = annot_dat_OS$daystoevent_OS, event = annot_dat_OS$censored_OS)
-
-fit.coxph_cox <- coxph(surv_obj_cox ~ Radiotherapy + `Tumor Stage` + clustertest, data = annot_dat_OS)
-
-plot_overview <- survminer::ggforest(fit.coxph_cox, data = annot_dat_OS)
-print(plot_overview)
-
-tiff("results_6_humancohort_CPHM/Cox_compare_effect_OS.tiff", units = "in", width = 10, height = 5, res = 300, pointsize =(10*200/72))
-print(plot_overview)
-dev.off()
-
-fit1 <- survfit(surv_obj_cox ~ clustertest, data = annot_dat_OS)
-
-plot2_OS <- ggsurvplot(fit1, data = annot_dat, pval = TRUE, surv.median.line = "v", 
-                       title = "Overall Survival Cluster", 
-                   xlab = "Time-to-Death [days]", ylab = "Overall Survival",
-                   palette = c("blue", "orange"), risk.table = TRUE)
-plot2_OS
-
-tiff("results_6_humancohort_CPHM/Cluster_KM_OS.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*200/72))
-plot2_OS
-dev.off()
-
-fit2 <- survfit(surv_obj_cox ~ Radiotherapy, data = annot_dat_OS)
-
-plot3_OS <- ggsurvplot(fit2, data = annot_dat_OS, pval = TRUE, title = "Overall Survival Radiotherapy", 
-                   xlab = "Time-to-Death [days]", ylab = "Overall Survival",
-                   palette = c("red", "grey"), risk.table = TRUE)
-plot3_OS
-
-tiff("results_6_humancohort_CPHM/Radiotherapy_KM_OS.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*200/72))
-plot3_OS
-dev.off()
-```
-
-## Cox Proportional Hazards Model OS
-
-```{r, include = FALSE}
-adjpvalue_threshold <- 0.05
-```
-
-__adjusted p-value threshold = `r adjpvalue_threshold`__  
-
-```{r, include = FALSE}
-nathreshold <- 0.2
-```
-
-__Maximum fraction of missing values per protein = `r nathreshold`__
-
-```{r, echo=FALSE, include=FALSE}
-stats_table_OS <- data.frame(matrix(nrow = 0, ncol = 5))
-colnames(stats_table_OS) <- c("Protein", "HazardRatio","pvalue", "lower95", "upper95")
-
-i <-  nrow(wide_dat)
-while (i > 0) {
-  
-      protein <- wide_dat[i,] 
-      #1)
-      obj <-  filter(wide_dat[i,]) %>%
-              column_to_rownames(var = "Protein") %>%
-              pivot_longer(cols = colnames(wide_dat[,-1]), names_to = "Sample", values_to = "Abundance") %>%
-              na.omit() %>%
-              left_join(annot_dat_OS, by = "Sample")
-      
-      #1b)
-      if (sum(!is.na(obj$Abundance)) >= (1-nathreshold)*(ncol(wide_dat)-1)) {
-        
-              #2)
-              surv_obj <- Surv(time = obj$daystoevent_OS, event = obj$censored_OS)
-              fit.coxph <- coxph(surv_obj ~ Abundance + Radiotherapy, data = obj) 
-              
-              coxph_result <- summary(fit.coxph)
-              coxph_pvalue <- coxph_result$coefficients
-              coxph_pvalue <- coxph_pvalue[, 5]
-              coxph_hazard <- coxph_result$conf.int
-              
-              
-              stats_table_OS <- rbind(stats_table_OS, t(rbind(Protein = protein$Protein, HazardRatio = coxph_hazard[1,1], 
-                                                        pvalue = coxph_pvalue, lower95 = coxph_hazard[1,3], 
-                                                        upper95 = coxph_hazard[1,4])))
-              }
-     
-      i <- i-1
-      print(i)
+setwd("results_5_humancohort_ECM-TurnoverCluster/KEGG_pathway/")
+for(varhsa in hsa){
+  pv.out <- pathview(gene.data =fgdata, 
+                     pathway.id = varhsa, 
+                     species = "hsa", 
+                     out.suffix = "90perc_NM", 
+                     kegg.native = TRUE,
+                     same.layer = FALSE,
+                     low = list(gene = "blue"), 
+                     mid =list(gene = "gray"), 
+                     high = list(gene = "orange"))
 }
-stats_table_OS$HazardRatio <- as.numeric(stats_table_OS$HazardRatio)
-stats_table_OS$pvalue <- as.numeric(stats_table_OS$pvalue)
-stats_table_OS$lower95 <- as.numeric(stats_table_OS$lower95)
-stats_table_OS$upper95 <- as.numeric(stats_table_OS$upper95)
-stats_table_OS <- mutate(stats_table_OS, type = rownames(stats_table_OS)) %>%  #activate if Covariables are included
-              filter(str_detect(type, "Abundance") == TRUE)
-```
 
-```{r, echo=FALSE, include=FALSE}
-#3
-stats_table_OS <- mutate(stats_table_OS, adj.pvalue = p.adjust(stats_table_OS$pvalue, method = "BH"))
 
-write.csv(stats_table_OS, "results_6_humancohort_CPHM/stats_table_OS.csv")
+# Proteases
+hupo2 <- read.delim("Data/uniprot-proteome UP000005640+reviewed yes.tab") %>%
+  separate_rows(Gene.names, sep = " ")
+proteases <- read_excel("Data/MEROPS_human_proteases.xlsx") %>%
+  filter(!is.na(Gene)) %>%
+  rename(Gene.names = "Gene") %>%
+  left_join(hupo2, by = "Gene.names")
 
-adj.hits_stats_OS <- filter(stats_table_OS, adj.pvalue <= adjpvalue_threshold) %>%
-                arrange(HazardRatio)
-adj.hits_OS <- filter(wide_dat, Protein %in% adj.hits_stats_OS$Protein)  
-```
+tovolc_protease <- filter(tovolc, Protein %in% proteases$Entry) 
+write.csv(tovolc_protease, file = "results_5_humancohort_ECM-TurnoverCluster/volcano_hits_protease.csv")
 
-```{r, echo=FALSE, include=FALSE}
-#remove redundant Uniprot IDs
-adj.hits_stats2_OS <- adj.hits_stats_OS %>%
-                   mutate(IDunique = Protein)
-adj.hits_stats2_OS$Protein <- substr(adj.hits_stats_OS$Protein, nchar(adj.hits_stats_OS$Protein) - 6 + 1, nchar(adj.hits_stats_OS$Protein))
+tophits_protease <- slice_max(tovolc_protease, order_by = logFC, n = 10) %>%
+  bind_rows(slice_min(tovolc_protease, order_by = logFC, n = 10)) %>%
+  filter(abs(logFC) >= 0.5 & adj.P.Val <= 0.05)
 
-adj.hits_stats2_OS <- left_join(adj.hits_stats2_OS, humanproteome, by = "Protein")
-                    
-write.csv(adj.hits_stats2_OS, file = "results_6_humancohort_CPHM/Coxph_adj.hits_stats_OS.csv")
-```
+simpvol2_protease <-  ggplot(data = tovolc, 
+                             mapping = aes(x = logFC,
+                                           y = -log10(adj.P.Val)),
+                             label = Entry.name) + 
+  geom_point(data = filter(tovolc, adj.P.Val > 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "black", alpha = 0.5) +
+  geom_point(data = filter(tovolc, logFC < 0, adj.P.Val <= 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "blue", alpha = 0.2) +
+  geom_point(data = filter(tovolc, logFC > 0, adj.P.Val <= 0.05), 
+             mapping = aes(x = logFC, y = -log10(adj.P.Val)),
+             color = "orange", alpha = 0.2) +
+  theme_classic() +
+  geom_text_repel(aes(label=ifelse(Protein %in% tophits_protease$Protein, as.character(Gene.names[,1]),'')),
+                  hjust=0, vjust=0, size = 3, max.overlaps = Inf, min.segment.length = 2, point.size = NA) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  #labs(title = "Protein Hits", subtitle = "Differentially expressed Cluster 1 vs. Cluster 2") +
+  xlab("log2 fold change") +
+  ylab("-log10 adj. p-value")
 
-```{r, echo = FALSE, fig.width = 12, fig.height = 8}
-ggtable <- adj.hits_stats2_OS %>%
-            mutate(log2HazardRatio = log2(round(HazardRatio, digits = 3))) %>%
-            mutate(log2lower95 = log2(lower95)) %>%
-            mutate(log2upper95 = log2(upper95)) %>%
-  mutate(IDunique = paste(Gene.names)) %>%
-  arrange(log2HazardRatio)
-           
+print(simpvol2_protease)
 
-ggtable$IDunique <- factor(ggtable$IDunique, levels = ggtable$IDunique)
+ggsave("results_5_humancohort_ECM-TurnoverCluster/volcano_protease.pdf", plot = simpvol2_protease, width = 63, height = 42, 
+       units = "mm", dpi = 300, scale = 2)
 
-plot3 <- ggplot(data = ggtable, aes(x = IDunique, y = log2HazardRatio, 
-                           ymin = log2lower95, ymax = log2upper95,
-                           color = adj.pvalue)) +
-  geom_point(size = 3) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(size = 7, angle = 90, face = "bold")) +
-  geom_errorbar() +
-  scale_color_gradient(limits = c(0, 0.05), low = "red", high = "purple") +
-  labs(x = "Protein Hits (Uniprot / Gene IDs)", y = "log2 Hazard Ratio", color = "p.adjust") 
-plot3
-
-tiff("results_6_humancohort_CPHM/CPHMresult_OS.tiff", units = "in", width = 10, height = 4, res = 300, pointsize =(10*200/72))
-plot3
-dev.off()
-```
-
-# Gene Ontology of Protein Hits
-
-Different enrichment analyses of protein hits shown above. Performed with GeneOntology and KEGG databases.
-
-### Proteins associated with higher risk
-
-##### Gene Set Enrichment Analysis 
-
-```{r, figure.widh = 12, figure.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
-hazardgse <- dplyr::rename(stats_table_OS, UNIPROT = "Protein")
-hazardgse$HazardRatio <-  log2(hazardgse$HazardRatio)
-
-gene.df <- bitr(hazardgse$UNIPROT, fromType = "UNIPROT", 
-                toType = c("ENTREZID"),
-                OrgDb = org.Hs.eg.db)
-gseList <- left_join(gene.df, hazardgse, by = "UNIPROT") %>%
-              dplyr::select(ENTREZID, HazardRatio)
-
-geneList = gseList[,2]
-names(geneList) = as.character(gseList[,1])
-geneList = sort(geneList, decreasing = TRUE)
-
-gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot4 <- ridgeplot(gse, label_format = 20) + 
-  theme(axis.text.y = element_text(size = 9)) + 
-  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
-  labs(x = "log2 Hazard Ratio", title = "Ontology: Biological Processes")
-plot4
-
-tiff("results_6_humancohort_CPHM/ridgeplot_BP_OS.tiff", units = "in", width = 14, height = 10, res = 300, pointsize =(10*200/72))
-plot4
+tiff("results_5_humancohort_ECM-TurnoverCluster/volcano_protease.tiff", units = "in", width = 10, height = 6, res = 300, pointsize =(10*100/72))
+print(simpvol2_protease)
 dev.off()
 
-gse2 <- gseGO(geneList, ont = "MF", OrgDb = org.Hs.eg.db, keyType = "ENTREZID", minGSSize = 30, maxGSSize = 500, 
-               pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-plot5 <- ridgeplot(gse2, label_format = 20) + 
-  theme(axis.text.y = element_text(size = 9)) +
-  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
-  labs(x = "log2 Hazard Ratio", title = "Ontology: Molecular Function")
-plot5
-
-tiff("results_6_humancohort_CPHM/ridgeplot_MG_OS.tiff", units = "in", width = 14, height = 10, res = 300, pointsize =(10*200/72))
-plot5
+png("results_5_humancohort_ECM-TurnoverCluster/volcano_protease.png", units = "in", width = 10, height = 6, res = 300, pointsize =(10*100/72))
+print(simpvol2_protease)
 dev.off()
-
-highrisk <- filter(hazardgse, HazardRatio >= 0)
-geneListhighrisk <- highrisk$HazardRatio
-names(geneListhighrisk) = as.character(highrisk$UNIPROT)
-geneListhighrisk = sort(geneListhighrisk, decreasing = TRUE)
-
-lowrisk <- filter(hazardgse, HazardRatio <= 0)
-geneListlowrisk <- lowrisk$HazardRatio * -1
-names(geneListlowrisk) = as.character(lowrisk$UNIPROT)
-geneListlowrisk = sort(geneListlowrisk, decreasing = TRUE)
-
-bla <- list(`high risk` = geneListhighrisk, `low risk` = geneListlowrisk)
-
-ck <- compareCluster(bla, fun = gseGO, OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80)
-plot2 <- dotplot(ck)
-plot2
-
-tiff("results_6_humancohort_CPHM/dotplot2_OS.tiff", units = "in", width = 8, height =6, res = 300, pointsize =(8*100/72))
-plot2
-dev.off()
-
-highrisk <- filter(hazardgse, HazardRatio > 0 & adj.pvalue <= 0.05)
-geneListhighrisk <- highrisk$UNIPROT
-
-lowrisk <- filter(hazardgse, HazardRatio < 0 & adj.pvalue <= 0.05)
-geneListlowrisk <- lowrisk$UNIPROT
-
-bla <- list(`high risk` = geneListhighrisk, `low risk` = geneListlowrisk)
-
-ck <- compareCluster(bla, fun = enrichGO, OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80)
-plot2B <- dotplot(ck)
-plot2B
-
-tiff("results_6_humancohort_CPHM/dotplot3_hits_OS.tiff", units = "in", width = 10, height =6, res = 300, pointsize =(8*100/72))
-plot2B
-dev.off()
-```
-
