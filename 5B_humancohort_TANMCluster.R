@@ -259,13 +259,13 @@ dev.off()
 annot_dat2 <- dplyr::rename(annot_dat, Sample = "Sample_ID") %>%
   dplyr::select("Patient_No", "clustertest")
 annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
-  dplyr::rename(Sample = 'Sample ID') %>%
-  filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  #dplyr::rename(Sample = 'Sample ID') %>%
+  filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209", "KB107", "KB167")) %>%
   arrange(Sample) %>%
   left_join(annot_dat2, by = "Patient_No") %>%
   filter(is.na(clustertest) == FALSE) %>%
   mutate(clusterinfo = ifelse(clustertest == "cluster1", "cluster1", "cluster2")) %>%
-  mutate(clusterinfo = ifelse(Tissue == "normal", "TANM", clusterinfo))
+  mutate(clusterinfo = ifelse(Group == "normal", "TANM", clusterinfo))
 
 expr_dat2 <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
   dplyr::select(-X) %>%
@@ -274,7 +274,7 @@ expr_dat2 <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprM
   pivot_longer(cols = contains("KB"), names_to = "Sample", values_to = "Abundance") %>%
   left_join(annotation, by = "Sample")
 
-plot4 <- ggplot(expr_dat2, aes(x = Tissue, y = Abundance, fill = clusterinfo)) +
+plot4 <- ggplot(expr_dat2, aes(x = Group, y = Abundance, fill = clusterinfo)) +
   geom_line(aes(group = Patient_No)) +
   geom_boxplot(width = 0.5) +
   #geom_jitter() +
@@ -283,7 +283,7 @@ plot4 <- ggplot(expr_dat2, aes(x = Tissue, y = Abundance, fill = clusterinfo)) +
                     breaks = c("TANM", "cluster2", "cluster1")) +
   stat_compare_means(comparisons = list(c("normal", "Tumor"))) +
   theme_minimal()
-
+plot4
 
 tiff("results_5_humancohort_ECM-TurnoverCluster/EIF4A1.tiff", units = "in", width = 4, height = 4, 
      res = 300, pointsize =(4*100/72))
@@ -348,4 +348,5 @@ ridgeplot(y)
 
 tiff("results_5_humancohort_ECM-TurnoverCluster/celltype_ridgeplot.tiff", units = "in", width = 8, height = 10, res = 300, pointsize =(10*100/72))
 ridgeplot(y)
+
 dev.off()
