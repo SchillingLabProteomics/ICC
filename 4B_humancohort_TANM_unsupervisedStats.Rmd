@@ -33,108 +33,6 @@ library(rcompanion)
 library(gtsummary)
 `%notin%` <- Negate(`%in%`)
 
-## Required functions -----
-na_filter <- function(data, max_na_per_group, logtrans, minInt_inpute, fraction_Inpute = 5){
-      
-data_long <- pivot_longer(data = data,
-                             cols = matches("KB"),
-                             values_to = "Intensity",
-                             names_to = "Sample") 
-data_long <- left_join(data_long, annotation1, by = "Sample")
-
-if (logtrans){
-       data_long <- mutate(data_long,
-                           Intensity = log2(Intensity))
-}
-
-na_count <- group_by(data_long,
-                     Protein, Group) %>%
-      summarise(na_count = sum(is.na(Intensity)),
-                total = n()) %>% 
-      ungroup() %>% 
-      mutate(NA_fraction = na_count/total)
-
-nafraction <- group_by(na_count,
-                           Protein) %>%
-      summarise(max_nafraction = max(NA_fraction),
-                min_nafraction = min(NA_fraction)) %>%
-      ungroup()
-
-included_prots <- dplyr::filter(nafraction,
-                                max_nafraction <= max_na_per_group)
-
-
-
-if (minInt_inpute){
-  
-  min_intensityprot <- data_long %>% 
-  group_by(Protein) %>% 
-  mutate(min_int = min(Intensity, na.rm = TRUE)) %>%
-  mutate(th_of_min_int = min_int/fraction_Inpute)
-  
-  data_long_nonas1 <- min_intensityprot %>% 
-  mutate(Intensity = ifelse(is.na(Intensity),
-                            yes = th_of_min_int,
-                            no = Intensity),
-         `Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
-  dplyr::select(Protein, `Group-Sample`, Intensity) %>%
-  dplyr::filter(Protein %in% included_prots$Protein)
-
-  data_maxperc_nas <- pivot_wider(data_long_nonas1,
-                                  names_from = `Group-Sample`,
-                                  values_from = Intensity)
-} else {
-  data_long_nonas1 <- filter(data_long,
-                           Protein %in% included_prots$Protein) %>% 
-      mutate(`Group-Sample` = paste(Group,"-",Sample, sep = "")) %>%
-      dplyr::select(Protein, `Group-Sample`, Intensity)
-  
-  data_maxperc_nas <- pivot_wider(data_long_nonas1,
-                       names_from = `Group-Sample`,
-                       values_from = Intensity)
-}
-}
-
-## Function to get the proteins by their maximal contribution ----
-
-getbycontribution <- function(data, splsda_model){
-          
-          n_comps <- splsda_model$ncomp
-          
-          prots_complist <- list()
-          
-          for (i in 1:n_comps){
-                    prots_complist[[i]] <- selectVar(splsda_model, comp = i)$value %>% 
-                              mutate(protein_id = row.names(.), comp = paste0("comp",i))
-          }
-          
-          prots_percomp <- do.call(bind_rows, prots_complist)
-          
-          data_long <- pivot_longer(data = data,
-                                    cols = matches("^S"),
-                                    values_to = "Intensity",
-                                    names_to = c("Group-Sample"))
-          
-          int_per_group <- separate(data_long, 
-                                    col = `Group-Sample`, 
-                                    sep = "-",
-                                    into = c("Group", "Sample")) %>% 
-                    group_by(Protein, Group) %>% 
-                    summarise(median_Int = median(Intensity),
-                              mean_Int = mean(Intensity)) %>% 
-                    filter(Protein %in% prots_percomp$protein_id)
-          
-          proteins_group <- int_per_group %>%
-                    ungroup() %>%
-                    group_by(Protein) %>%
-                    filter(mean_Int == max(mean_Int)) %>% 
-                    mutate(duplicated = duplicated(Protein)) %>%
-                    ungroup() %>% 
-                    arrange(Group)
-          
-          return(proteins_group)
-}
-
 `%nin%` = Negate(`%in%`)
 ```
 
@@ -161,14 +59,14 @@ t_data_1st_log2_med_normaft <- column_to_rownames(oridata1, var = "Protein") %>%
 
 ### Random forest missing value imputation ----
 
-if(!file.exists("results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")){
+if(!file.exists("results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_TANM.rds")){
   set.seed(546)
   #tictoc::tic()
   impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
   #tictoc::toc()
-  write_rds(impfr_2, file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")
+  write_rds(impfr_2, file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_TANM.rds")
 } else {
-  impfr_2 <- read_rds(file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_intratumor.rds")
+  impfr_2 <- read_rds(file = "results_4B_humancohort_TAMN_unsupervisedStats/imputfr_aft_TANM.rds")
 }
 
 t_data_1st_log2_med_normimpaft <- impfr_2$ximp
