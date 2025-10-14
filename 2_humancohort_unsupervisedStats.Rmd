@@ -53,7 +53,7 @@ colnames_data <- colnames(oridata) %>%
 colnames(oridata) <- colnames_data
 
 annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
-              filter(Sample %nin% c("KB107", "KB167", "KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+              filter(Sample %nin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>% #"KB107", "KB167", 
               arrange(Sample)
 
 oridata1 <- dplyr::select(oridata, one_of("Protein", annotation$Sample)) %>%
@@ -215,7 +215,6 @@ For unsupervised statistics (clustering, PCA) an imputed data matrix is used, si
 t_data_1st_log2_med_normaft <- column_to_rownames(oridata1, var = "Protein") %>%
   filter(rowSums(!is.na(.)) / ncol(.) >= 0.8) %>%
   t()
-
 
 ### Random forest missing value imputation ----
 
@@ -421,4 +420,3 @@ tiff("results_2_humancohort_unsupervisedStats/Heatmap_immune2.tiff", units = "in
 Heatmap
 dev.off()
 ```
-
