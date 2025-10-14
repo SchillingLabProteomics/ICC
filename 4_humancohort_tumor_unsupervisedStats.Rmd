@@ -1,7 +1,486 @@
 ---
 title: "ICC - Mixomics"
 author: "Miguel Cosenza, Tilman Werner - AG Schilling - Uniklinik Freiburg"
+date: "`r format(Sys.time---
+title: "ICC - Mixomics"
+author: "Miguel Cosenza, Tilman Werner - AG Schilling - Uniklinik Freiburg"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+    html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width=5, fig.height=4, error=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Required packages ----
+library(tidyverse)
+library(readxl)
+library(mixOmics)
+library(kableExtra)
+library(reactable)
+library(proDA)
+library(missForest)
+library(dplyr)
+library(M3C)
+library(made4)
+library(ComplexHeatmap)
+library(circlize)
+library(lubridate)
+library(patchwork)
+library(rcompanion)
+library(gtsummary)
+`%notin%` <- Negate(`%in%`)
+
+`%nin%` = Negate(`%in%`)
+```
+
+## Load and prepare data and annotation 
+```{r}
+oridata <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
+  dplyr::select(-X)
+
+annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
+              filter(Sample %nin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+              arrange(Sample)
+annotation1 <- dplyr::select(annotation, Sample, Group)
+annotation2 <- filter(annotation, Group == "Tumor") 
+
+tumorcellularity <- read.csv("Data/tumor_cell_content.csv") %>%
+  dplyr::select(-X) %>%
+  dplyr::rename(`Liver Cells %` = "Liver.Cells..") %>%
+  dplyr::rename(`Immune Cells %` = "Immune.Cells..") %>%
+  dplyr::rename(`Necrotic Cells %` = "Necrotic.Cells..") %>%
+  dplyr::rename(`Stromal Cells %` = "Stromal.Cells..") %>%
+  dplyr::rename(`ICC Tumor Cells %` = "ICC.Tumor.Cells..") 
+
+annotation2 <- left_join(annotation2, tumorcellularity, by = "Sample")
+
+oridata1 <- dplyr::select(oridata, "Protein", annotation2$Sample) 
+```
+
+# Data pre-processing  
+For unsupervised statistics (clustering, PCA) an imputed data matrix is used, since these methods cannot process missing values. All other analyses rely on the original, unimputed matrix.
+```{r}
+t_data_1st_log2_med_normaft <- column_to_rownames(oridata1, var = "Protein") %>%
+  filter(rowSums(!is.na(.)) / ncol(.) >= 0.8) %>%
+  t()
+
+### Random forest missing value imputation ----
+
+if(!file.exists("results_4_humancohort_tumor_unsupervisedStats/imputfr_aft_intratumor.rds")){
+  set.seed(546)
+  #tictoc::tic()
+  impfr_2 <- missForest(t_data_1st_log2_med_normaft) # this takes ~ 3 minutes to compute
+  #tictoc::toc()
+  write_rds(impfr_2, file = "results_4_humancohort_tumor_unsupervisedStats/imputfr_aft_intratumor.rds")
+} else {
+  impfr_2 <- read_rds(file = "results_4_humancohort_tumor_unsupervisedStats/imputfr_aft_intratumor.rds")
+}
+
+t_data_1st_log2_med_normimpaft <- impfr_2$ximp
+
+data_1st_log2_med_normimpaft <- t(t_data_1st_log2_med_normimpaft)
+
+```   
+
+# Hierarchical Clustering   
+```{r, fig.width=12, fig.height=6, results="asis"}
+my_dist_t <- dist(t_data_1st_log2_med_normaft)
+my_hclust_t <- hclust(my_dist_t)
+plot(my_hclust_t, labels = FALSE)
+
+svg("results_4_humancohort_tumor_unsupervisedStats/clustering.svg", width = 6, height = 3, pointsize =(6*100/72))
+plot(my_hclust_t, labels = FALSE)
+dev.off()
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/clustering.tiff", units = "in", width = 6, height = 3, res = 300, pointsize =(6*100/72))
+plot(my_hclust_t, labels = FALSE)
+dev.off()
+```
+
+# M3C determination of most appropiate number of subgroups in cluster
+```{r fig.width=12, fig.height=6, results="asis", echo=FALSE, include=FALSE}
+m3c <- M3C(data_1st_log2_med_normimpaft, clusteralg = "hc")
+m3c
+```
+
+# added for comparison -> not part of original script
+```{r fig.width=12, fig.height=6, results="asis"}  
+cat("\n**Cut the generated tree in n groups** (k):\n")
+my_hclust_t_3_grp <- cutree(my_hclust_t, k = 2)
+plot(my_hclust_t)
+rect.hclust(my_hclust_t, k=2, border="red")
+clusters <- as.data.frame(my_hclust_t_3_grp) %>%
+  rownames_to_column(var = "Sample") %>%
+  dplyr::rename(clustertest = "my_hclust_t_3_grp")
+clusters$Sample <- str_remove(clusters$Sample, "Tumor-")
+annotation2 <- left_join(annotation2, clusters, by = "Sample")
+annotation2 <- mutate(annotation2, clustertest = paste("cluster", clustertest, sep = ""))
+write_csv(annotation2, file = "results_4_humancohort_tumor_unsupervisedStats/annotation_cluster_k=2.csv")
+```
+
+```{r}
+# create Patient Table 2
+summary1 <- dplyr::select(annotation2, "Age (years)", "Ethnicity", "Sex", "PSC", "Hep B/C",
+                          "Tumor Stage", "Radiotherapy", "Duct Type", "Lymphangioinvasion", "Satellite Nodules", 
+                          "Liver Capsule Invasion", "Portal Spread", 
+                          "Overall Tumor Budding", "intratumoral Tumor Budding", "peritumoral Tumor Budding", "Liver Cells %",
+                          "Immune Cells %", "Necrotic Cells %", "Stromal Cells %", "ICC Tumor Cells %", 
+                          "clustertest") 
+
+summary1[summary1 == "NA"] <- NA
+summary1[summary1 == "NT"] <- NA
+summary1[summary1 == "NR"] <- NA
+summary1[summary1 == "NotTested"] <- NA
+summary1 <- droplevels(summary1)
+
+gtsumm <- tbl_summary(summary1, by = "clustertest") %>%
+  add_n() %>%
+  add_p() %>%
+  modify_header(label = "**ICC cohort**")
+
+as_gt(gtsumm) %>%
+  gt::gtsave(filename = "results_4_humancohort_tumor_unsupervisedStats/ICC_PatTable_clusters.html")
+```
+
+
+# Principal component analysis (PCA)
+```{r}
+pca_res = mixOmics::pca(t_data_1st_log2_med_normimpaft, ncomp = 10, center = TRUE, scale = TRUE)
+
+plot(pca_res)
+plotIndiv(pca_res, ind.names = FALSE)
+
+pca <- plotIndiv(pca_res, ind.names = FALSE)
+pca_df <- pca$df %>%
+  rownames_to_column(var = "Sample") %>%
+  mutate(Sample = str_remove_all(Sample, "Tumor-")) %>%
+  inner_join(annotation2, by = "Sample") 
+
+plot1 <- ggplot(pca_df, aes(x, y, color = clustertest)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab(pca$graph$labels$x) +
+  ylab(pca$graph$labels$y) +
+  #labs(title = "PCA clusters", subtitle = "new clusters") +
+  scale_color_manual(values = c("blue", "orange"),
+                     breaks = c("cluster1", "cluster2"))
+plot1
+
+ggsave("results_4_humancohort_tumor_unsupervisedStats/PCA_newclust.pdf", plot = plot1, width = 68, height = 48, 
+       units = "mm", dpi = 300, scale = 2)
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/PCA_newclust.tiff", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot1
+dev.off()
+
+png("results_4_humancohort_tumor_unsupervisedStats/PCA_newclust.png", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot1
+dev.off()
+
+plot2 <- ggplot(pca_df, aes(x, y, color = cluster)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab(pca$graph$labels$x) +
+  ylab(pca$graph$labels$y) +
+  #labs(title = "PCA clusters", subtitle = "old clusters") +
+  scale_color_manual(values = c("blue", "orange"),
+                     breaks = c("cluster1", "cluster2"))
+plot2
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/PCA_oldclust.tiff", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot2
+dev.off()
+
+png("results_4_humancohort_tumor_unsupervisedStats/PCA_oldclust.png", units = "in", width = 5, height = 4, res = 300, pointsize =(5*100/72))
+plot2
+dev.off()
+```   
+
+#Heatmap
+```{r}
+annot_dat <- annotation2 %>%
+  dplyr::rename(ID = 'Sample') %>%
+  filter(ID %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  arrange(ID) %>%
+  mutate(daystorecurrence = as.numeric(daystorecurrence))
+annot_dat$`Tumor Stage` <- factor(annot_dat$`Tumor Stage`, levels = c("T1", "T2", "T3", "T4"))
+
+
+oridata2 <- column_to_rownames(oridata1, var = "Protein")
+oridata2 <- filter(oridata2, rowSums(!is.na(oridata2)) / ncol(oridata2) > 0.8)
+subtractor <- apply(oridata2[,-1], 1, median, na.rm = TRUE) #WHY oridata2[,-1]??? Question from Johanna
+oridata2 <- oridata2 - subtractor
+oridata2 <- as.matrix(oridata2) 
+
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(cluster_old = annot_dat$cluster, 
+                      cluster_new = annot_dat$clustertest,
+                      TTR = annot_dat$daystorecurrence, 
+                      Sex = annot_dat$Sex, 
+                      Radiotherapy = annot_dat$Radiotherapy,
+                      DuctType = annot_dat$`Duct Type`,
+                      TumorStage = annot_dat$`Tumor Stage`,
+                   col = list(cluster_old = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2"), 
+                              cluster_new = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2"),
+                              TTR = colorRamp2(c(0, 1300, 2300), c("red", "yellow", "green")),
+                              Sex = c("M" = "blue", "F" = "pink"),
+                              Radiotherapy = c("Yes" = "red", "No" = "gray95"),
+                              DuctType = c("LDT" = "#D29BA2", "SDT" = "#8E698E"),
+                              TumorStage = c("T1" = "#FFF0F0", "T2" = "#FF9595", "T3" = "#DD3730", "T4" = "#9b0303")), 
+                   na_col = "white",
+                   annotation_label = c("Tumor Cluster", "clustertest", "TTR (days)", "Sex", "Radiotherapy", 
+                                        "Duct Type", "AJCC Tumor Stage"),
+                   annotation_legend_param = list(cluster_old = list(title_position = "lefttop-rot"),
+                                                  cluster_new = list(title_position = "lefttop-rot"),
+                                                  Radiotherapy = list(title_position = "lefttop-rot"),
+                                                  Sex = list(title_position = "lefttop-rot"),
+                                                  DuctType = list(title_position = "lefttop-rot"),
+                                                  TumorStage = list(title_position = "lefttop-rot"),
+                                                  TTR = list(title_position = "lefttop-rot")))
+
+heatmap <- Heatmap(oridata2, name = "∆ log2 LFQ", column_title = "Samples", row_title = "Proteins", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        show_row_dend = FALSE,
+        cluster_columns = my_hclust_t, cluster_rows = TRUE,
+        bottom_annotation = ha,
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+heatmap
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap.tiff", units = "in", width = 10, height = 8, res = 300, pointsize =(10*100/72))
+heatmap
+dev.off()
+```
+
+# Correlation Plot
+```{r}
+corr <- column_to_rownames(oridata1, var = "Protein") %>%
+  cor(use = "pairwise.complete.obs", method = "pearson")
+
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(cluster_old = annot_dat$cluster, 
+                      cluster_new = annot_dat$clustertest,
+                      TTR = annot_dat$daystorecurrence, 
+                      Sex = annot_dat$Sex, 
+                      Radiotherapy = annot_dat$Radiotherapy,
+                      DuctType = annot_dat$`Duct Type`,
+                      TumorStage = annot_dat$`Tumor Stage`,
+                   col = list(cluster_old = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2"), 
+                              cluster_new = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2"), 
+                              TTR = colorRamp2(c(0, 1300, 2300), c("red", "yellow", "green")),
+                              Sex = c("M" = "blue", "F" = "pink"),
+                              Radiotherapy = c("Yes" = "red", "No" = "gray95"),
+                              DuctType = c("LDT" = "#D29BA2", "SDT" = "#8E698E"),
+                              TumorStage = c("T1" = "#FFF0F0", "T2" = "#FF9595", "T3" = "#DD3730", "T4" = "#9b0303")), 
+                   na_col = "white",
+                   annotation_label = c("Cluster old", "Cluster new", "TTR (days)", "Sex", "Radiotherapy", 
+                                        "Duct Type", "AJCC Tumor Stage"),
+                   annotation_legend_param = list(cluster_old = list(title_position = "lefttop-rot"),
+                                                  cluster_new = list(title_position = "lefttop-rot"),
+                                                  Radiotherapy = list(title_position = "lefttop-rot"),
+                                                  Sex = list(title_position = "lefttop-rot"),
+                                                  DuctType = list(title_position = "lefttop-rot"),
+                                                  TumorStage = list(title_position = "lefttop-rot"),
+                                                  TTR = list(title_position = "lefttop-rot")))
+
+heatmapcorr <- Heatmap(corr,  
+        col = colorRamp2(c(0.7,  1), c("#ffffa7", "#150793")), 
+        #col = colorRamp2(c(0.75,  1), c("white", "black")),
+        show_row_names = FALSE, show_column_names = FALSE, 
+        show_row_dend = FALSE,
+        cluster_columns = my_hclust_t, cluster_rows = my_hclust_t,
+        column_names_gp = gpar(fontsize = 5), row_names_gp = gpar(fontsize = 5),
+        bottom_annotation = ha,
+        heatmap_legend_param = list(title = "correlation", title_position = "lefttop-rot"))
+heatmapcorr
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap_corr.tiff", units = "in", width = 10, height = 8, res = 300, pointsize =(10*100/72))
+heatmapcorr
+dev.off()
+```
+
+# Immunemap
+```{r}
+oridata_immune <- column_to_rownames(oridata1, var = "Protein") %>%
+  filter(rowSums(!is.na(.)) / ncol(.) > 0.3) 
+subtractor <- apply(oridata_immune, 1, median, na.rm = TRUE)
+oridata_immune <- oridata_immune - subtractor
+oridata_immune <- rownames_to_column(oridata_immune, var = "UniProt_ID_Human")
+
+immunelist <- read_excel("Data/CDMarkers_Profiling_ImmuneCells_Human_Mouse.xlsx") 
+immunelist1 <- filter(immunelist, !is.na(`Key Marker`))
+
+oridata_immune1 <- filter(oridata_immune, 
+                          UniProt_ID_Human %in% immunelist1$UniProt_ID_Human) %>%
+  left_join(dplyr::select(immunelist1, "UniProt_ID_Human", "Gene"), by = "UniProt_ID_Human") %>%
+  column_to_rownames(var = "Gene") %>%
+  dplyr::select(-UniProt_ID_Human) %>%
+  as.matrix()
+
+annotation_immune <- mutate(annotation2, cluster = factor(clustertest,
+                                                            levels = c("cluster1", "cluster2")))
+
+immunelist_fit <- filter(immunelist1, Gene %in% rownames(oridata_immune1))
+```
+
+```{r}
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(cluster = annotation_immune$cluster,
+                   col = list(cluster = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2")), 
+                   show_legend = FALSE)
+
+hb = rowAnnotation(Category = immunelist_fit$`Key Marker`,
+                   show_annotation_name = FALSE, 
+                   show_legend = FALSE)
+
+Heatmap <- Heatmap(oridata_immune1, name = "∆ log2 LFQ", column_title = " ", row_title = "", 
+        col = colorRamp2(c(-5, 0, 5), c("blue", "grey93", "red")),
+        show_row_names = TRUE, show_column_names = FALSE, 
+        row_names_side = "left", row_names_gp = gpar(fontsize = 5),
+        show_row_dend = FALSE, show_column_dend = FALSE, 
+        cluster_rows = FALSE, cluster_columns = my_hclust_t,
+        #column_split = annotation_immune$cluster, 
+        row_split = immunelist_fit$`Key Marker`, row_title_rot = 0, 
+        row_title_gp = gpar(fontsize = 5), row_title_side = "right",
+        bottom_annotation = ha, right_annotation = hb, na_col = "white",
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+Heatmap
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap_immune.tiff", units = "in", width = 8, height = 6, res = 300, pointsize =(8*100/72))
+Heatmap
+dev.off()
+```
+
+
+```{r}
+immunelist2 <- filter(immunelist, !is.na(Gene))
+
+oridata_immune2 <- filter(oridata_immune, 
+                          UniProt_ID_Human %in% immunelist2$UniProt_ID_Human) %>%
+  inner_join(dplyr::select(immunelist2, "UniProt_ID_Human", "Gene"), by = "UniProt_ID_Human") %>%
+  unique() %>%
+  remove_rownames() %>%
+  column_to_rownames(var = "Gene") %>%
+  dplyr::select(-UniProt_ID_Human) %>%
+  as.matrix()
+
+annotation_immune2 <- mutate(annotation2, cluster = factor(clustertest,
+                                                            levels = c("cluster1", "cluster2")))
+
+immunelist_fit2 <- filter(immunelist2, Gene %in% rownames(oridata_immune2))
+```
+
+```{r}
+#CAVE! annotation file and plot matrix need to be in the exactly same order to match in the plot!
+ha = columnAnnotation(cluster = annotation_immune$cluster,
+                   col = list(cluster = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2")), 
+                   show_legend = FALSE)
+
+hb = rowAnnotation(Category = immunelist_fit$`Key Marker`,
+                   show_annotation_name = FALSE, 
+                   show_legend = FALSE)
+
+Heatmap <- Heatmap(oridata_immune2, name = "∆ log2 LFQ", column_title = " ", row_title = "", 
+        col = colorRamp2(c(-5, 0, 5), c("blue", "grey93", "red")),
+        show_row_names = TRUE, show_column_names = FALSE, 
+        row_names_side = "left", row_names_gp = gpar(fontsize = 5),
+        show_row_dend = FALSE, show_column_dend = FALSE, 
+        cluster_rows = TRUE, cluster_columns = my_hclust_t,
+        #column_split = annotation_immune$cluster, 
+        #row_split = immunelist_fit$`Key Marker`, 
+        row_title_rot = 0, 
+        row_title_gp = gpar(fontsize = 5), row_title_side = "right",
+        bottom_annotation = ha,  
+        #right_annotation = hb,
+        na_col = "white",
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+Heatmap
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap_immune2.tiff", units = "in", width = 10, height = 10, res = 300, pointsize =(10*100/72))
+Heatmap
+dev.off()
+```
+
+# Matrisomal heatmap
+```{r}
+matrixprot <- read_excel("Data/Kopie von matrisome_hs_masterlist-1.xlsx") %>%
+  filter(Category != "n/a")
+matrixprot2 <- matrixprot 
+matrixprot2$UniProt_IDs <- str_split_fixed(matrixprot$UniProt_IDs, ":", n = Inf) 
+
+oridat_matrisom <- filter(oridata1, Protein %in% matrixprot2$UniProt_IDs) %>%
+  dplyr::select("Protein", annot_dat$ID)
+
+oridat_matrisom2 <- column_to_rownames(oridat_matrisom, var = "Protein")
+oridat_matrisom2 <- filter(oridat_matrisom2, rowSums(!is.na(oridat_matrisom2)) / ncol(oridat_matrisom2) > 0.8)
+subtractor <- apply(oridat_matrisom2[,-1], 1, median, na.rm = TRUE)
+oridat_matrisom2 <- oridat_matrisom2 - subtractor
+
+
+matrixprot_res <- sapply(matrixprot$UniProt_IDs, str_extract, rownames(oridat_matrisom2)) %>%
+  t()%>%
+  as.data.frame()
+
+i <- 1
+matrixvector <- vector()
+while (i <= nrow(matrixprot_res)) {
+  x <- t(matrixprot_res[i,])
+  matrixvector1 <- ifelse(sum(!is.na(x)) > 0, na.omit(x), NA)
+  matrixvector <- c(matrixvector, matrixvector1)
+  i <- i + 1
+}
+
+matrixprot3 <- mutate(matrixprot2, detect = matrixvector) %>%
+  filter(!is.na(detect))
+
+oridat_matrisom3 <- rownames_to_column(oridat_matrisom2, var = "detect") %>%
+  left_join(matrixprot3, by = "detect")
+
+oridat_matrisom4 <- dplyr::select(oridat_matrisom3, "detect", contains("KB")) %>%
+  column_to_rownames(var = "detect")
+
+matrixprot4 <- dplyr::select(oridat_matrisom3, !contains("KB")) 
+
+
+ha = columnAnnotation(cluster = annot_dat$clustertest,
+                      col = list(cluster = c("cluster1" = "cornflowerblue", "cluster2" = "goldenrod2")),
+                      show_annotation_name = FALSE,
+                      annotation_legend_param = list(title = "cluster", title_position = "lefttop-rot"))
+
+hb = rowAnnotation(Category = matrixprot4$Category, 
+                   col = list(Category = c("Collagens" = "#235781", "ECM-affiliated Proteins" = "#A25525",
+                                           "ECM Glycoproteins" = "#A8D8CA", "ECM Regulators" = "#E8A470",
+                                           "Proteoglycans" = "#711550", "Secreted Factors" = "#F0E7CD")),
+                   show_annotation_name = FALSE, 
+                   annotation_legend_param = list(title = "Category", title_position = "lefttop-rot"))
+
+ht <- Heatmap(oridat_matrisom4, name = "∆ log2 LFQ",
+        column_title = "Samples", row_title = "  ", 
+        show_row_names = TRUE, show_column_names = FALSE, 
+        na_col = "white",
+        column_names_gp = gpar(fontsize = 5), row_names_gp = gpar(fontsize = 6),
+        show_row_dend = FALSE,
+        row_split = matrixprot4$Category,
+        cluster_rows = TRUE,
+        row_labels = matrixprot4$`Gene Symbol`,
+        cluster_columns = my_hclust_t,
+        top_annotation = ha,
+        right_annotation = hb,
+        heatmap_legend_param = list(title = "∆ log2 LFQ", title_position = "lefttop-rot"))
+ht
+
+tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap_matrisome.tiff", units = "in", width = 10, height = 14, res = 300, pointsize =(14*100/72))
+ht
+dev.off()
+```
+(), '%d %B, %Y')`"
 output:
     html_document:
     toc: true
@@ -519,3 +998,4 @@ tiff("results_4_humancohort_tumor_unsupervisedStats/Heatmap_matrisome.tiff", uni
 ht
 dev.off()
 ```
+
