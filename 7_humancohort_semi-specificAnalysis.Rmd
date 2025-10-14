@@ -21,9 +21,6 @@ library(limma)
 library(clusterProfiler)
 library(org.Hs.eg.db)
 library(smplot2)
-library(survival)
-library(survminer)
-library(ggrepel)
 `%notin%` <- Negate(`%in%`)
 ```
 
@@ -93,17 +90,15 @@ pept_2_protein <- sequences %>%
 
 # Annotate peptides as fully- or semi-tryptic
 ```{r,echo=FALSE, message=FALSE, include=FALSE}
-# activate if needed or running for first time
-
-# cleavage_annotated_peptides <- annotate_peptides(peptide2protein = pept_2_protein, 
-#                                                        fasta = fasta_human,
-#                                                        decoy_tag = "rev_")
-# saveRDS(cleavage_annotated_peptides, file = "results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
+cleavage_annotated_peptides <- annotate_peptides(peptide2protein = pept_2_protein,
+                                                       fasta = fasta_human,
+                                                       decoy_tag = "rev_")
+saveRDS(cleavage_annotated_peptides, file = "results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
 ```
 
 # filter semi-spec peptides from all identified peptides
 ```{r, echo=FALSE, message=FALSE, include=FALSE}
-cleavage_annotated_peptides <- read_rds("results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
+# cleavage_annotated_peptides <- read_rds("results_7_humancohort_semi-specificAnalysis/cleavage_annotated_peptides.rds")
 
 semispec_sequences <- filter(cleavage_annotated_peptides,
                              specificity == "semi_specific" & is_terminal == "not_terminal")
@@ -175,16 +170,53 @@ plot2
 
 ggsave("results_7_humancohort_semi-specificAnalysis/semi_boxplots.pdf", plot = plot2, width = 76, height = 49, 
        units = "mm", dpi = 300, scale = 2)
+
+annot_plot2 <- filter(annot_plot, Group == "Tumor")
+
+ggplot(annot_plot2, aes(x = cluster, y = percent, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity Tumor") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
+
+annot_plot3 <- filter(annot_plot, Group == "TANM")
+
+ggplot(annot_plot3, aes(x = cluster, y = percent, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity TANM") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
+
+annot_plot4 <- dplyr::select(annot_plot, "Patient_No", "cluster", "percent", "Group") %>%
+  pivot_wider(names_from = "Group", values_from = "percent") %>%
+  filter(!is.na(TANM)) %>%
+  mutate(diff = TANM - Tumor)
+
+ggplot(annot_plot4, aes(x = cluster, y = diff, color = cluster)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_color_manual(breaks = c("cluster1", "cluster2"),
+                     values = c("lightblue", "orange")) +
+  geom_jitter(alpha = 0.3) +
+  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
+  labs(title = "Proteolytic Activity % difference") +
+  xlab("") +
+  ylab("LFQ semi-specific peptides / all peptides [%]") +
+  theme_minimal() 
 ```
 
 # Match clinical Data to Fraction of semi-spec peptides
 ```{r}
-annot_dat_tucell <- read.csv("Data/tumor_cell_content.csv") %>%
-  dplyr::rename(`Liver Cells %` = "Liver.Cells..") %>%
-  dplyr::rename(`Immune Cells %` = "Immune.Cells..") %>%
-  dplyr::rename(`Necrotic Cells %` = "Necrotic.Cells..") %>%
-  dplyr::rename(`Stromal Cells %` = "Stromal.Cells..") %>%
-  dplyr::rename(`ICC Tumor Cells %` = "ICC.Tumor.Cells..")
+annot_dat_tucell <- read.csv("Data/tumor_cell_content.csv")
 
 annot_complete <- dplyr::select(annot_plot, "Sample", "total", "semi", "percent") %>%
   left_join(annot, by = "Sample") %>%
@@ -616,10 +648,10 @@ geneList <- tovolc$logFC
 names(geneList) = as.character(tovolc$Protein)
 geneList = sort(geneList, decreasing = TRUE)
 
-gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
-# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
-#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-# saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
+# gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
+gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
+             pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment_TumorTANM.RData")
 
 ridgeplot <- ridgeplot(gse, label_format = 20) + 
   theme(axis.text.y = element_text(size = 6)) + 
@@ -845,10 +877,10 @@ geneList <- tovolc$logFC
 names(geneList) = as.character(tovolc$Protein)
 geneList = sort(geneList, decreasing = TRUE)
 
-gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
-# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 50, maxGSSize = 500,
-#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-# saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
+# gse <- readRDS("results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
+gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 50, maxGSSize = 500,
+             pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+saveRDS(gse, file = "results_7_humancohort_semi-specificAnalysis/GeneSetEnrichment__clusters.RData")
 
 ridgeplot <- ridgeplot(gse, label_format = 20) + 
   theme(axis.text.y = element_text(size = 6)) + 
@@ -918,89 +950,4 @@ corrplot2
 
 ggsave("results_7_humancohort_semi-specificAnalysis/corrplot_clusters.pdf", plot = corrplot2, width = 116, height = 62, 
        units = "mm", dpi = 300, scale = 2)
-```
-
-
-# DELETE FOR SUBMISSION
-
-# test only highly abundant peptides
- 
-```{r}
-sequences_cut <- dplyr::select(sequences, contains("KB")) %>%
-  mutate(mean_intens = rowMeans(., na.rm = TRUE)) %>%
-  slice_max(order_by = mean_intens, n = round((nrow(.)*0.2), digits = 0))
-
-semi_percent <- data.frame(total = colSums(dplyr::select(sequences_cut, contains("KB")), na.rm = TRUE)) %>%
-  rownames_to_column(var = "Sample") %>%
-  mutate(semi = colSums(dplyr::select(semi_data_raw, contains("KB")), na.rm = TRUE)) %>%
-  mutate(percent = (semi / total)*100) %>%
-  left_join(dplyr::select(annot, "Sample", "Group"), by = "Sample")
-```
-
-```{r, echo=FALSE, message=FALSE}
-annot_select <- dplyr::select(annot, "Sample", "cluster")
-annot_plot <- dplyr::select(annot, "Sample", "Patient_No", "Group") %>%
-  pivot_wider(names_from = "Group", values_from = "Sample") %>%
-  dplyr::rename(Sample = "Tumor") %>%
-  left_join(annot_select, by = "Sample") %>%
-  pivot_longer(cols = c("Sample", "normal"), names_to = "bla", values_to = "Sample") %>%
-  filter(!is.na(Sample)) %>%
-  filter(!is.na(cluster)) %>%
-  left_join(semi_percent, by = "Sample")
-
-annot_plot$Group <- str_replace_all(annot_plot$Group, "normal", "TANM")
-
-ggplot(annot_plot, aes(x = Group, y = percent, color = Group)) +
-  geom_boxplot(outlier.shape = NA) +
-  scale_color_manual(breaks = c("Tumor", "TANM"),
-                     values = c("red", "blue")) +
-  geom_jitter(alpha = 0.3) +
-  stat_compare_means(comparisons = list(c("TANM", "Tumor")), method = "wilcox.test", label = "p.format") +
-  labs(title = "Proteolytic Activity") +
-  xlab("") +
-  ylab("LFQ semi-specific peptides / all peptides [%]") +
-  theme_minimal() +
-  facet_grid(~ cluster)
-
-annot_plot2 <- filter(annot_plot, Group == "Tumor")
-
-ggplot(annot_plot2, aes(x = cluster, y = percent, color = cluster)) +
-  geom_boxplot(outlier.shape = NA) +
-  scale_color_manual(breaks = c("cluster1", "cluster2"),
-                     values = c("lightblue", "orange")) +
-  geom_jitter(alpha = 0.3) +
-  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
-  labs(title = "Proteolytic Activity Tumor") +
-  xlab("") +
-  ylab("LFQ semi-specific peptides / all peptides [%]") +
-  theme_minimal() 
-
-annot_plot3 <- filter(annot_plot, Group == "TANM")
-
-ggplot(annot_plot3, aes(x = cluster, y = percent, color = cluster)) +
-  geom_boxplot(outlier.shape = NA) +
-  scale_color_manual(breaks = c("cluster1", "cluster2"),
-                     values = c("lightblue", "orange")) +
-  geom_jitter(alpha = 0.3) +
-  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
-  labs(title = "Proteolytic Activity TANM") +
-  xlab("") +
-  ylab("LFQ semi-specific peptides / all peptides [%]") +
-  theme_minimal() 
-
-annot_plot4 <- dplyr::select(annot_plot, "Patient_No", "cluster", "percent", "Group") %>%
-  pivot_wider(names_from = "Group", values_from = "percent") %>%
-  filter(!is.na(TANM)) %>%
-  mutate(diff = TANM - Tumor)
-
-ggplot(annot_plot4, aes(x = cluster, y = diff, color = cluster)) +
-  geom_boxplot(outlier.shape = NA) +
-  scale_color_manual(breaks = c("cluster1", "cluster2"),
-                     values = c("lightblue", "orange")) +
-  geom_jitter(alpha = 0.3) +
-  stat_compare_means(comparisons = list(c("cluster1", "cluster2")), method = "wilcox.test", label = "p.format") +
-  labs(title = "Proteolytic Activity % difference") +
-  xlab("") +
-  ylab("LFQ semi-specific peptides / all peptides [%]") +
-  theme_minimal() 
 ```
