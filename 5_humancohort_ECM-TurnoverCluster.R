@@ -44,6 +44,8 @@ library(survminer)
 library(ggrepel)
 library(readxl)
 library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pathview)
 `%notin%` <- Negate(`%in%`)
 
 ## Load data ----
@@ -58,7 +60,7 @@ expr_dat <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMa
   dplyr::select("Protein", annot_dat$Sample) 
 expr_dat <- filter(expr_dat, rowSums(!is.na(expr_dat)) / ncol(expr_dat) >= 0.8) 
 
-          
+            
 ## Define the design matrix ----
 
 groups <- as.factor(annot_dat$clustertest)
@@ -237,12 +239,11 @@ geneList <- tovolc$logFC
 names(geneList) = as.character(tovolc$Protein)
 geneList = sort(geneList, decreasing = TRUE)
 
-# activate as needed
-gse <- readRDS("results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
-# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
-#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-# 
-# saveRDS(gse, file = "results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
+# gse <- readRDS("results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
+gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
+             pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+
+saveRDS(gse, file = "results_5_humancohort_ECM-TurnoverCluster/GeneSetEnrichment.RData")
 
 ridgeplot <- ridgeplot(gse, label_format = 20) + 
   theme(axis.text.y = element_text(size = 6)) + 
@@ -280,6 +281,17 @@ plot1
 dev.off()
 
 # EIF4A1
+annot_dat2 <- dplyr::rename(annot_dat, Sample = "Sample_ID") %>%
+  dplyr::select("Patient_No", "clustertest")
+annotation <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
+  dplyr::rename(Tissue = "Group") %>%
+  filter(Sample %notin% c("KB106", "KB42", "KB147", "KB53", "KB213", "KB215", "KB55", "KB23", "KB209")) %>%
+  arrange(Sample) %>%
+  left_join(annot_dat2, by = "Patient_No") %>%
+  filter(is.na(clustertest) == FALSE) %>%
+  mutate(clusterinfo = ifelse(clustertest == "cluster1", "cluster1", "cluster2")) %>%
+  mutate(clusterinfo = ifelse(Tissue == "normal", "TANM", clusterinfo))
+
 expr_dat2 <- read.csv("results_2_humancohort_unsupervisedStats/TimsTOF_ICC_ExprMat_log2_median.csv", na = "NA") %>%
   dplyr::select(-X) %>%
   dplyr::select("Protein", annotation$Sample) %>%
@@ -296,7 +308,7 @@ plot4 <- ggplot(expr_dat2, aes(x = Tissue, y = Abundance, fill = clusterinfo)) +
                     breaks = c("TANM", "cluster2", "cluster1")) +
   stat_compare_means(comparisons = list(c("normal", "Tumor"))) +
   theme_minimal()
-
+plot4
 
 tiff("results_5_humancohort_ECM-TurnoverCluster/EIF4A1.tiff", units = "in", width = 4, height = 4, 
      res = 300, pointsize =(4*100/72))
@@ -345,6 +357,7 @@ for(varhsa in hsa){
                      mid =list(gene = "gray"), 
                      high = list(gene = "orange"))
 }
+setwd("D:/data/Klara/cohort_TimsTOF/analysis")
 
 
 # Proteases
