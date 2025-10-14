@@ -228,7 +228,7 @@ ggplot(annot_complete, aes(x = Sex, y = percent, fill = Group)) +
   geom_boxplot() +
   scale_fill_manual(breaks = c("Tumor", "TANM"),
                      values = c("#A52A2A", "#4682B4")) +
-  stat_compare_means(comparisons = list(c("Tumor", "TANM")), method = "t.test", label = "p.format") +
+  stat_compare_means(comparisons = list(c("M", "F")), method = "t.test", label = "p.format") +
   theme_classic() +
   facet_wrap(~ Group)
 
