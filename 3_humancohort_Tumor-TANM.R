@@ -47,7 +47,6 @@ library(pathview)
 `%notin%` <- Negate(`%in%`)
 
 ## Load data ----
-#modify annot_dat processing to change comparison
 
 annot_dat <- read_excel("Data/Table S1 - Patient Table.xlsx") %>%
   dplyr::rename(Sample_ID = 'Sample') %>%
@@ -125,7 +124,7 @@ write.table(output_limma2,
             file = "results_3_humancohort_Tumor-TANM/tab_output_general_Ftest_limma.txt",
             row.names = FALSE, col.names = TRUE)
 
-sig_hits <- dplyr::filter(output_limma2, #MODIFIED!!! 
+sig_hits <- dplyr::filter(output_limma2, 
                                adj.P.Val <= 0.01) %>% row.names(.)
 
 n_significant <- length(sig_hits)
@@ -212,12 +211,11 @@ geneList <- tovolc$logFC
 names(geneList) = as.character(tovolc$Protein)
 geneList = sort(geneList, decreasing = TRUE)
 
-# activate as needed
-gse <- readRDS("results_3_humancohort_Tumor-TANM/GeneSetEnrichment.RData")
-# gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
-#              pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
-# 
-# saveRDS(gse, file = "results_3_humancohort_Tumor-TANM/GeneSetEnrichment.RData")
+# gse <- readRDS("results_3_humancohort_Tumor-TANM/GeneSetEnrichment.RData")
+gse <- gseGO(geneList, ont = "BP", OrgDb = org.Hs.eg.db, keyType = "UNIPROT", minGSSize = 80, maxGSSize = 500,
+             pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = FALSE)
+
+saveRDS(gse, file = "results_3_humancohort_Tumor-TANM/GeneSetEnrichment.RData")
 
 ridgeplot <- ridgeplot(gse, label_format = 20) + 
   theme(axis.text.y = element_text(size = 6)) + 
@@ -315,7 +313,7 @@ for(varhsa in hsa){
                      mid =list(gene = "gray"), 
                      high = list(gene = "red"))
 }
-setwd("")
+setwd("D:/data/Klara/cohort_TimsTOF/analysis")
 
 # Proteases
 hupo2 <- read.delim("Data/uniprot-proteome UP000005640+reviewed yes.tab") %>%
