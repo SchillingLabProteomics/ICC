@@ -26,6 +26,7 @@ library(made4)
 library(ggridges)
 library(readxl)
 library(gtsummary)
+library(eulerr)
 `%notin%` <- Negate(`%in%`)
 ```
 
@@ -446,6 +447,7 @@ fit <- euler(c(
 plot4 <- plot(fit, fills = list(fill = c("lightblue", "blue"), alpha = 0.5), quantities = TRUE)
 plot4
 ```
+
 
 # Gene Ontology of Protein Hits
 
