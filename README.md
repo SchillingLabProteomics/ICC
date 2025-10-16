@@ -6,7 +6,7 @@ This repository contains the analysis pipeline for the manuscript:
 
 "Proteomic Characterization of Intrahepatic Cholangiocarcinoma Identifies Risk-Stratifying Subgroups, Proteins Associated with Time-To-Recurrence, and mTOR Effector Molecule EIF4A1 as a Druggable Therapeutic Target."
 
-The study is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. The cohort was analyzed using DIA-NN 1.9.2 with a fully tryptic database, and a semi-specific database to study proteolytic events. Additionally, we analyzed 9 patient-derived ICC xenografts (PDX).
+The study is based on proteomic data from a human cohort of intrahepatic cholangiocarcinoma (ICC) comprising 80 tumor and 77 tumor-adjacent, non-malignant (TANM) tissue samples from 80 patients. All samples were measured on a TimsTOF Flex coupled to an Evosep One chromatographic system. Data from earlier measurements on a Thermo QExactive coupled to an Easynlc nanoflow system is available but was not included in the publication. The cohort was analyzed using DIA-NN 1.9.2 with a fully tryptic database, and a semi-specific database to study proteolytic events. Additionally, we analyzed 9 patient-derived ICC xenografts (PDX).
 
 
 ## How to Use the Code
@@ -84,8 +84,8 @@ All mass spectrometric raw data and analysis results are deposited in the MassIV
 DIA-NN output files *(Filter by Collection = quant)*:<br>
 `ICC_humancohort_DIA-NNoutput.tsv` `ICC_humancohort_semi-specific_DIA-NNoutput.tsv` <br> `ICC_xenografts_DIA-NNoutput.tsv`
 
-Expression Matrices *(Filter by Collection = quant)*:<br>
-`ICC_humancohort_matrix.tsv` `semi-specific_precursors_raw.csv` <br> `semi-specific_precursors_sequence+ID+Abundance.csv` `ICC_xenografts_matrix.csv` `ICC_xenografts_matrix_humanproteins.tsv`
+Expression Matrices *(Filter by Collection = search)*:<br>
+`TimsTOF_ICC_humancohort_matrix.tsv` `ICC_remeasurement_TimsTOF_semispec_reannot.tsv` <br> `semi-specific_precursors_sequence+ID+Abundance.csv` `ICC_xenografts_matrix.csv` `ICC_xenografts_matrix_humanproteins.tsv`
 
 Analysis-specific annotation *(Filter by Collection = metadata)*:<br>
 `annotation_batch_correction.xlsx` `study_design.xlsx`
